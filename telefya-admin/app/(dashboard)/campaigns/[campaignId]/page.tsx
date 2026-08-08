@@ -270,10 +270,14 @@ export default function CampaignDetailsPage() {
       : 0;
 
   function sendNow() {
+    if (!campaign) return;
+
     setActionError("");
 
     const confirmed = window.confirm(
-      `Send "${campaign.name}" to ${campaign.total_recipients || 0} recipient(s) now? This action starts the delivery queue.`,
+      `Send "${campaign.name}" to ${
+        campaign.total_recipients || 0
+      } recipient(s) now? This action starts the delivery queue.`,
     );
 
     if (!confirmed) return;
