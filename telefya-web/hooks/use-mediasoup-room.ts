@@ -183,6 +183,46 @@ function normalizeParticipants(
   return Object.values(value);
 }
 
+function getMeetingClientInfo() {
+  if (typeof navigator === "undefined") {
+    return {
+      platform: "unknown",
+      browser: "unknown",
+      deviceType: "unknown",
+    };
+  }
+
+  const userAgent = navigator.userAgent;
+  const platform = navigator.platform || "unknown";
+
+  const browser = /edg\//i.test(userAgent)
+    ? "Edge"
+    : /chrome|crios/i.test(userAgent)
+      ? "Chrome"
+      : /firefox|fxios/i.test(userAgent)
+        ? "Firefox"
+        : /safari/i.test(userAgent)
+          ? "Safari"
+          : "Other";
+
+  const deviceType = /ipad|tablet/i.test(userAgent)
+    ? "tablet"
+    : /mobi|android|iphone/i.test(userAgent)
+      ? "mobile"
+      : "desktop";
+
+  return {
+    platform: platform.slice(0, 40),
+    browser: browser.slice(0, 80),
+    deviceType,
+  };
+}
+
+function asFiniteNumber(value: unknown) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
 function toHookStatus(
   engineStatus: VirtualBackgroundEngineStatus,
 ): VirtualBackgroundStatus {
@@ -235,6 +275,13 @@ export function useMediasoupRoom(params: {
   const localStreamRef = useRef<MediaStream | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
   const sourceStreamRef = useRef<MediaStream | null>(null);
+
+  const telemetryTimerRef = useRef<number | null>(null);
+  const previousTransportBytesRef = useRef<{
+    timestamp: number;
+    inboundBytes: number;
+    outboundBytes: number;
+  } | null>(null);
 
   const engineRef = useRef<VirtualBackgroundEngine | null>(null);
   const roomJoinedRef = useRef(false);
@@ -598,6 +645,167 @@ export function useMediasoupRoom(params: {
     }
   }, [consumeProducer]);
 
+  const stopQualityTelemetry = useCallback(() => {
+    if (telemetryTimerRef.current !== null) {
+      window.clearInterval(telemetryTimerRef.current);
+      telemetryTimerRef.current = null;
+    }
+
+    previousTransportBytesRef.current = null;
+  }, []);
+
+  const sendQualityTelemetry = useCallback(async () => {
+    const socket = socketRef.current;
+    const sendTransport = sendTransportRef.current;
+    const recvTransport = recvTransportRef.current;
+
+    if (
+      !socket?.connected ||
+      !roomJoinedRef.current ||
+      recordingMode
+    ) {
+      return;
+    }
+
+    try {
+      const transports = [sendTransport, recvTransport].filter(
+        Boolean,
+      ) as Transport<AppData>[];
+
+      const reports = await Promise.all(
+        transports.map(async (transport) => {
+          const statsTransport = transport as Transport<AppData> & {
+            getStats?: () => Promise<RTCStatsReport>;
+          };
+
+          return statsTransport.getStats
+            ? statsTransport.getStats()
+            : null;
+        }),
+      );
+
+      let roundTripTimeMs: number | null = null;
+      let jitterMs: number | null = null;
+      let packetsLost = 0;
+      let packetsReceived = 0;
+      let inboundBytes = 0;
+      let outboundBytes = 0;
+
+      for (const report of reports) {
+        if (!report) continue;
+
+        for (const rawStat of report.values()) {
+          const stat = rawStat as unknown as Record<string, unknown>;
+          const type = String(stat.type || "");
+
+          if (type === "remote-inbound-rtp") {
+            const roundTripTime = asFiniteNumber(
+              stat.roundTripTime,
+            );
+
+            if (roundTripTime !== null) {
+              roundTripTimeMs = Math.round(roundTripTime * 1000);
+            }
+
+            const jitter = asFiniteNumber(stat.jitter);
+
+            if (jitter !== null) {
+              jitterMs = Math.round(jitter * 1000);
+            }
+
+            packetsLost += asFiniteNumber(stat.packetsLost) || 0;
+            packetsReceived +=
+              asFiniteNumber(stat.packetsReceived) || 0;
+          }
+
+          if (type === "inbound-rtp") {
+            const jitter = asFiniteNumber(stat.jitter);
+
+            if (jitter !== null) {
+              jitterMs = Math.round(jitter * 1000);
+            }
+
+            packetsLost += asFiniteNumber(stat.packetsLost) || 0;
+            packetsReceived +=
+              asFiniteNumber(stat.packetsReceived) || 0;
+
+            inboundBytes += asFiniteNumber(stat.bytesReceived) || 0;
+          }
+
+          if (type === "outbound-rtp") {
+            outboundBytes += asFiniteNumber(stat.bytesSent) || 0;
+          }
+        }
+      }
+
+      const now = Date.now();
+      const previous = previousTransportBytesRef.current;
+
+      let inboundBitrateKbps: number | null = null;
+      let outboundBitrateKbps: number | null = null;
+
+      if (previous && now > previous.timestamp) {
+        const elapsedSeconds = (now - previous.timestamp) / 1000;
+
+        inboundBitrateKbps = Number(
+          (
+            ((inboundBytes - previous.inboundBytes) * 8) /
+            elapsedSeconds /
+            1000
+          ).toFixed(2),
+        );
+
+        outboundBitrateKbps = Number(
+          (
+            ((outboundBytes - previous.outboundBytes) * 8) /
+            elapsedSeconds /
+            1000
+          ).toFixed(2),
+        );
+      }
+
+      previousTransportBytesRef.current = {
+        timestamp: now,
+        inboundBytes,
+        outboundBytes,
+      };
+
+      const totalPackets = packetsLost + packetsReceived;
+      const packetLossPercent =
+        totalPackets > 0
+          ? Number(((packetsLost / totalPackets) * 100).toFixed(3))
+          : null;
+
+      socket.emit("meeting-telemetry", {
+        roundTripTimeMs,
+        jitterMs,
+        packetLossPercent,
+        inboundBitrateKbps,
+        outboundBitrateKbps,
+        audioPacketsLost: packetsLost,
+        videoPacketsLost: 0,
+        connectionState:
+          sendTransport?.connectionState ||
+          recvTransport?.connectionState ||
+          "connected",
+      });
+    } catch {
+      /*
+       * Telemetry is best-effort. It must never interrupt a user's call.
+       */
+    }
+  }, [recordingMode]);
+
+  const startQualityTelemetry = useCallback(() => {
+    stopQualityTelemetry();
+
+    void sendQualityTelemetry();
+
+    telemetryTimerRef.current = window.setInterval(() => {
+      void sendQualityTelemetry();
+    }, 10_000);
+  }, [sendQualityTelemetry, stopQualityTelemetry]);
+
   const applyVirtualBackground = useCallback(
     async (background: VirtualBackground) => {
       setBackgroundError("");
@@ -663,6 +871,7 @@ export function useMediasoupRoom(params: {
             isBot: recordingMode,
             micOn: !recordingMode,
             cameraOn: !recordingMode,
+            clientInfo: getMeetingClientInfo(),
           },
           resolve,
         );
@@ -750,6 +959,10 @@ export function useMediasoupRoom(params: {
       await flushPendingProducers();
       roomJoinedRef.current = true;
 
+      if (!recordingMode) {
+        startQualityTelemetry();
+      }
+
       setStatus("Connected");
     },
     [
@@ -764,6 +977,7 @@ export function useMediasoupRoom(params: {
       publishLocalMedia,
       flushPendingProducers,
       updateParticipant,
+      startQualityTelemetry,
     ],
   );
 
@@ -1367,6 +1581,8 @@ export function useMediasoupRoom(params: {
   const leave = useCallback(() => {
     if (!startedRef.current) return;
 
+    stopQualityTelemetry();
+
     const socket = socketRef.current;
 
     socket?.emit("leave", { roomId, userId });
@@ -1428,7 +1644,7 @@ export function useMediasoupRoom(params: {
     setWaitingRoomRequests([]);
     closeMeetingSocket();
     startedRef.current = false;
-  }, [roomId, userId]);
+  }, [roomId, userId, stopQualityTelemetry]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -1440,9 +1656,10 @@ export function useMediasoupRoom(params: {
     });
 
     return () => {
+      stopQualityTelemetry();
       leave();
     };
-  }, [enabled, connect, leave]);
+  }, [enabled, connect, leave, stopQualityTelemetry]);
 
   function toggleMic() {
     const next = !micOn;

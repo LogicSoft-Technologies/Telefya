@@ -515,6 +515,249 @@ ON DUPLICATE KEY UPDATE
   is_active = VALUES(is_active);
 `;
 
+const createPlatformAdminsTableQuery = `
+CREATE TABLE IF NOT EXISTS platform_admins (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  user_id VARCHAR(50) NOT NULL UNIQUE,
+  admin_role ENUM(
+    'super_admin',
+    'admin',
+    'support',
+    'analyst',
+    'marketing'
+  ) NOT NULL DEFAULT 'admin',
+  status ENUM('active', 'suspended') NOT NULL DEFAULT 'active',
+  created_by_user_id VARCHAR(50) NULL,
+  last_login_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    ON UPDATE CURRENT_TIMESTAMP,
+
+  INDEX idx_platform_admins_status (status, admin_role),
+
+  CONSTRAINT fk_platform_admins_user
+    FOREIGN KEY (user_id)
+    REFERENCES users(user_id)
+    ON DELETE CASCADE
+);
+`;
+
+const createAdminAuditLogsTableQuery = `
+CREATE TABLE IF NOT EXISTS admin_audit_logs (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  admin_user_id VARCHAR(50) NOT NULL,
+  action VARCHAR(120) NOT NULL,
+  target_type VARCHAR(80) NULL,
+  target_id VARCHAR(100) NULL,
+  metadata JSON NULL,
+  ip_address VARCHAR(64) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+  INDEX idx_admin_audit_actor (admin_user_id, created_at),
+  INDEX idx_admin_audit_target (target_type, target_id)
+);
+`;
+
+const createAdminAudienceSegmentsTableQuery = `
+CREATE TABLE IF NOT EXISTS admin_audience_segments (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(150) NOT NULL,
+  description VARCHAR(500) NULL,
+  filters JSON NOT NULL,
+  created_by_user_id VARCHAR(50) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    ON UPDATE CURRENT_TIMESTAMP,
+
+  UNIQUE KEY uq_admin_audience_segment_name (name),
+  INDEX idx_admin_audience_segments_creator (created_by_user_id)
+);
+`;
+
+const createAdminMailTemplatesTableQuery = `
+CREATE TABLE IF NOT EXISTS admin_mail_templates (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(150) NOT NULL,
+  subject VARCHAR(255) NOT NULL,
+  preheader VARCHAR(255) NULL,
+  html_content MEDIUMTEXT NOT NULL,
+  text_content MEDIUMTEXT NULL,
+  created_by_user_id VARCHAR(50) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    ON UPDATE CURRENT_TIMESTAMP,
+
+  UNIQUE KEY uq_admin_mail_template_name (name),
+  INDEX idx_admin_mail_templates_creator (created_by_user_id)
+);
+`;
+
+const createAdminMailRecipientsTableQuery = `
+CREATE TABLE IF NOT EXISTS admin_mail_recipients (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  campaign_id BIGINT NOT NULL,
+  user_id VARCHAR(50) NULL,
+  email VARCHAR(100) NOT NULL,
+  delivery_status ENUM(
+    'queued',
+    'sending',
+    'sent',
+    'failed',
+    'skipped'
+  ) NOT NULL DEFAULT 'queued',
+  attempt_count INT NOT NULL DEFAULT 0,
+  next_attempt_at DATETIME NULL,
+  last_attempt_at DATETIME NULL,
+  locked_at DATETIME NULL,
+  locked_by VARCHAR(100) NULL,
+  provider_message_id VARCHAR(255) NULL,
+  failure_reason VARCHAR(500) NULL,
+  sent_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    ON UPDATE CURRENT_TIMESTAMP,
+
+  UNIQUE KEY uq_admin_campaign_recipient (campaign_id, email),
+  INDEX idx_admin_mail_recipients_status (
+    campaign_id,
+    delivery_status
+  ),
+  INDEX idx_admin_mail_recipients_worker (
+    delivery_status,
+    next_attempt_at,
+    locked_at
+  ),
+  INDEX idx_admin_mail_recipients_user (user_id),
+
+  CONSTRAINT fk_admin_mail_recipient_campaign
+    FOREIGN KEY (campaign_id)
+    REFERENCES admin_mail_campaigns(id)
+    ON DELETE CASCADE
+);
+`;
+
+const createMarketingConsentEventsTableQuery = `
+CREATE TABLE IF NOT EXISTS marketing_consent_events (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  user_id VARCHAR(50) NULL,
+  email VARCHAR(100) NOT NULL,
+  action ENUM('opted_in', 'opted_out') NOT NULL,
+  source VARCHAR(80) NOT NULL DEFAULT 'unknown',
+  ip_address VARCHAR(64) NULL,
+  user_agent VARCHAR(512) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+  INDEX idx_marketing_consent_email_time (email, created_at),
+  INDEX idx_marketing_consent_user_time (user_id, created_at),
+  INDEX idx_marketing_consent_action_time (action, created_at)
+);
+`;
+
+const createAdminMailCampaignsTableQuery = `
+CREATE TABLE IF NOT EXISTS admin_mail_campaigns (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  created_by_user_id VARCHAR(50) NOT NULL,
+  template_id BIGINT NULL,
+  name VARCHAR(150) NOT NULL,
+  subject VARCHAR(255) NOT NULL,
+  preheader VARCHAR(255) NULL,
+  html_content MEDIUMTEXT NOT NULL,
+  text_content MEDIUMTEXT NULL,
+  audience_filter JSON NOT NULL,
+  status ENUM(
+    'draft',
+    'scheduled',
+    'sending',
+    'sent',
+    'cancelled',
+    'failed'
+  ) NOT NULL DEFAULT 'draft',
+  scheduled_for DATETIME NULL,
+  started_at DATETIME NULL,
+  sent_at DATETIME NULL,
+  total_recipients INT NOT NULL DEFAULT 0,
+  sent_count INT NOT NULL DEFAULT 0,
+  failed_count INT NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    ON UPDATE CURRENT_TIMESTAMP,
+
+  INDEX idx_admin_mail_campaigns_status (status, scheduled_for),
+  INDEX idx_admin_mail_campaigns_creator (created_by_user_id),
+
+  CONSTRAINT fk_admin_mail_campaign_template
+    FOREIGN KEY (template_id)
+    REFERENCES admin_mail_templates(id)
+    ON DELETE SET NULL
+);
+`;
+
+const createMeetingSessionEventsTableQuery = `
+CREATE TABLE IF NOT EXISTS meeting_session_events (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  room_id VARCHAR(160) NOT NULL,
+  meeting_id BIGINT NULL,
+  user_id VARCHAR(50) NULL,
+  attendance_id BIGINT NULL,
+  event_type ENUM(
+    'joined',
+    'left',
+    'connection_state_changed',
+    'media_state_changed'
+  ) NOT NULL,
+  client_platform VARCHAR(40) NULL,
+  client_browser VARCHAR(80) NULL,
+  device_type VARCHAR(40) NULL,
+  connection_state VARCHAR(40) NULL,
+  metadata JSON NULL,
+  occurred_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+  INDEX idx_session_events_room_time (room_id, occurred_at),
+  INDEX idx_session_events_user_time (user_id, occurred_at),
+  INDEX idx_session_events_meeting_time (meeting_id, occurred_at),
+  INDEX idx_session_events_type_time (event_type, occurred_at)
+);
+`;
+
+const createMeetingQualitySamplesTableQuery = `
+CREATE TABLE IF NOT EXISTS meeting_quality_samples (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  room_id VARCHAR(160) NOT NULL,
+  meeting_id BIGINT NULL,
+  user_id VARCHAR(50) NULL,
+  attendance_id BIGINT NULL,
+  client_platform VARCHAR(40) NULL,
+  client_browser VARCHAR(80) NULL,
+  device_type VARCHAR(40) NULL,
+  connection_state VARCHAR(40) NULL,
+  round_trip_time_ms DECIMAL(10,2) NULL,
+  jitter_ms DECIMAL(10,2) NULL,
+  packet_loss_percent DECIMAL(6,3) NULL,
+  inbound_bitrate_kbps DECIMAL(12,2) NULL,
+  outbound_bitrate_kbps DECIMAL(12,2) NULL,
+  quality_score TINYINT UNSIGNED NULL,
+  is_unstable BOOLEAN NOT NULL DEFAULT FALSE,
+  metadata JSON NULL,
+  sampled_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+  INDEX idx_quality_samples_room_time (room_id, sampled_at),
+  INDEX idx_quality_samples_user_time (user_id, sampled_at),
+  INDEX idx_quality_samples_meeting_time (meeting_id, sampled_at),
+  INDEX idx_quality_samples_unstable_time (is_unstable, sampled_at)
+);
+`;
+
+async function createAdminReportingTables() {
+  try {
+    await query(createMeetingSessionEventsTableQuery);
+    await query(createMeetingQualitySamplesTableQuery);
+
+    console.log("Admin reporting tables created successfully");
+  } catch (error) {
+    console.error("Error creating admin reporting tables:", error);
+  }
+}
+
 async function createUsersTable() {
   try {
     await query(createUsersTableQuery);
@@ -794,6 +1037,218 @@ async function createBillingTables() {
   }
 }
 
+async function createAdminTables() {
+  try {
+    await query(createPlatformAdminsTableQuery);
+    await query(createAdminAuditLogsTableQuery);
+    await query(createAdminAudienceSegmentsTableQuery);
+    await query(createAdminMailTemplatesTableQuery);
+    await query(createAdminMailCampaignsTableQuery);
+    await query(createAdminMailRecipientsTableQuery);
+
+    console.log("Admin platform tables created successfully");
+  } catch (error) {
+    console.error("Error creating admin platform tables:", error);
+  }
+}
+
+async function migrateUsersForAdmin() {
+  try {
+    const rows = await query(
+      `
+        SELECT COLUMN_NAME
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = ?
+          AND TABLE_NAME = 'users'
+      `,
+      [process.env.DB_NAME],
+    );
+
+    const columns = new Set(rows.map((row) => row.COLUMN_NAME));
+
+    if (!columns.has("account_status")) {
+      await query(`
+        ALTER TABLE users
+        ADD COLUMN account_status
+          ENUM('active', 'suspended')
+          NOT NULL DEFAULT 'active'
+          AFTER is_verified
+      `);
+    }
+
+    if (!columns.has("marketing_opt_in")) {
+      await query(`
+        ALTER TABLE users
+        ADD COLUMN marketing_opt_in BOOLEAN NOT NULL DEFAULT FALSE
+        AFTER account_status
+      `);
+    }
+
+    if (!columns.has("marketing_opt_in_at")) {
+      await query(`
+        ALTER TABLE users
+        ADD COLUMN marketing_opt_in_at DATETIME NULL
+        AFTER marketing_opt_in
+      `);
+    }
+
+    console.log("users admin migration completed successfully");
+  } catch (error) {
+    console.error("Error migrating users for admin:", error);
+  }
+}
+
+async function createMarketingConsentEventsTable() {
+  try {
+    await query(createMarketingConsentEventsTableQuery);
+
+    console.log("marketing_consent_events table created successfully");
+  } catch (error) {
+    console.error(
+      "Error creating marketing consent events table:",
+      error,
+    );
+  }
+}
+
+async function migrateAdminMailDeliveryTables() {
+  try {
+    const recipientColumns = await query(
+      `
+        SELECT COLUMN_NAME
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = ?
+          AND TABLE_NAME = 'admin_mail_recipients'
+      `,
+      [process.env.DB_NAME],
+    );
+
+    const recipientColumnNames = new Set(
+      recipientColumns.map((row) => row.COLUMN_NAME),
+    );
+
+    await query(`
+      ALTER TABLE admin_mail_recipients
+      MODIFY COLUMN delivery_status ENUM(
+        'queued',
+        'sending',
+        'sent',
+        'failed',
+        'skipped'
+      ) NOT NULL DEFAULT 'queued'
+    `);
+
+    if (!recipientColumnNames.has("attempt_count")) {
+      await query(`
+        ALTER TABLE admin_mail_recipients
+        ADD COLUMN attempt_count INT NOT NULL DEFAULT 0
+        AFTER delivery_status
+      `);
+    }
+
+    if (!recipientColumnNames.has("next_attempt_at")) {
+      await query(`
+        ALTER TABLE admin_mail_recipients
+        ADD COLUMN next_attempt_at DATETIME NULL
+        AFTER attempt_count
+      `);
+    }
+
+    if (!recipientColumnNames.has("last_attempt_at")) {
+      await query(`
+        ALTER TABLE admin_mail_recipients
+        ADD COLUMN last_attempt_at DATETIME NULL
+        AFTER next_attempt_at
+      `);
+    }
+
+    if (!recipientColumnNames.has("locked_at")) {
+      await query(`
+        ALTER TABLE admin_mail_recipients
+        ADD COLUMN locked_at DATETIME NULL
+        AFTER last_attempt_at
+      `);
+    }
+
+    if (!recipientColumnNames.has("locked_by")) {
+      await query(`
+        ALTER TABLE admin_mail_recipients
+        ADD COLUMN locked_by VARCHAR(100) NULL
+        AFTER locked_at
+      `);
+    }
+
+    if (!recipientColumnNames.has("updated_at")) {
+      await query(`
+        ALTER TABLE admin_mail_recipients
+        ADD COLUMN updated_at DATETIME NOT NULL
+        DEFAULT CURRENT_TIMESTAMP
+        ON UPDATE CURRENT_TIMESTAMP
+        AFTER created_at
+      `);
+    }
+
+    const recipientIndexes = await query(
+      `
+        SELECT INDEX_NAME
+        FROM INFORMATION_SCHEMA.STATISTICS
+        WHERE TABLE_SCHEMA = ?
+          AND TABLE_NAME = 'admin_mail_recipients'
+      `,
+      [process.env.DB_NAME],
+    );
+
+    const recipientIndexNames = new Set(
+      recipientIndexes.map((row) => row.INDEX_NAME),
+    );
+
+    if (!recipientIndexNames.has("idx_admin_mail_recipients_worker")) {
+      await query(`
+        CREATE INDEX idx_admin_mail_recipients_worker
+        ON admin_mail_recipients (
+          delivery_status,
+          next_attempt_at,
+          locked_at
+        )
+      `);
+    }
+
+    const campaignColumns = await query(
+      `
+        SELECT COLUMN_NAME
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = ?
+          AND TABLE_NAME = 'admin_mail_campaigns'
+      `,
+      [process.env.DB_NAME],
+    );
+
+    const campaignColumnNames = new Set(
+      campaignColumns.map((row) => row.COLUMN_NAME),
+    );
+
+    if (!campaignColumnNames.has("cancelled_at")) {
+      await query(`
+        ALTER TABLE admin_mail_campaigns
+        ADD COLUMN cancelled_at DATETIME NULL
+        AFTER sent_at
+      `);
+    }
+
+    if (!campaignColumnNames.has("last_error")) {
+      await query(`
+        ALTER TABLE admin_mail_campaigns
+        ADD COLUMN last_error VARCHAR(500) NULL
+        AFTER failed_count
+      `);
+    }
+
+    console.log("admin mail delivery migration completed successfully");
+  } catch (error) {
+    console.error("Error migrating admin mail delivery tables:", error);
+  }
+}
+
 const creeateDBandTables = async () => {
   const hasDB = await createDB();
 
@@ -813,6 +1268,11 @@ const creeateDBandTables = async () => {
       await createMeetingRecordingsTable();
       await createWorkspaceFeatureTables();
       await createBillingTables();
+      await createAdminTables();
+      await createAdminReportingTables();
+      await migrateUsersForAdmin();
+      await createMarketingConsentEventsTable();
+      await migrateAdminMailDeliveryTables();
     }, 5);
   }
 };

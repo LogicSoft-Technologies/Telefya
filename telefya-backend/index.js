@@ -22,6 +22,15 @@ const socketAuthMiddleware = require("./middleware/socket_auth_middleware");
 const mediasoupSocket = require("./mediasoupSocket");
 const recording_bot_router = require("./routes/recording_bot_route");
 const billing_router = require("./routes/billing_route");
+const admin_router = require("./routes/admin/admin_router");
+
+const unsubscribe_router = require("./routes/public/unsubscribe_router");
+
+const {
+  startAdminMailDeliveryWorker,
+  stopAdminMailDeliveryWorker,
+} = require("./services/17-admin-mail-delivery_service");
+
 const {
   stripe_webhook_controller,
 } = require("./controllers/14-billing_controller");
@@ -85,12 +94,11 @@ const createServer = () => {
 
   app.use(cookieParser());
 
-
-app.post(
-  "/api/v2/billing/webhook",
-  express.raw({ type: "application/json" }),
-  stripe_webhook_controller,
-);
+  app.post(
+    "/api/v2/billing/webhook",
+    express.raw({ type: "application/json" }),
+    stripe_webhook_controller,
+  );
 
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
@@ -121,9 +129,24 @@ app.post(
     },
   });
 
+  const adminLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 150,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: {
+      success: false,
+      error: true,
+      message: "Too many admin requests. Please try again later.",
+      status: 429,
+    },
+  });
+
   app.use("/api/v2/auth", limiter, auth_router);
   app.use("/api/v2/user", user_router);
   app.use("/api/v2/billing", billing_router);
+  app.use("/api/v2/public", unsubscribe_router);
+  app.use("/api/v2/admin", adminLimiter, admin_router);
 
   app.get("/api/v2/health", (req, res) => {
     res.status(200).json({ status: "Server is running" });
@@ -289,11 +312,77 @@ const startServer = async (app, port = process.env.PORT || 5000) => {
   return { server, io };
 };
 
-if (require.main === module) {
-  (async () => await creeateDBandTables())();
+function wait(milliseconds) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, milliseconds);
+  });
+}
 
-  setTimeout(() => {
-    const app = createServer();
-    startServer(app);
-  }, 100);
+async function waitForCampaignTables() {
+  const attempts = 20;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      await query("SELECT 1 FROM admin_mail_campaigns LIMIT 1");
+      await query("SELECT 1 FROM admin_mail_recipients LIMIT 1");
+
+      return true;
+    } catch {
+      await wait(1_000);
+    }
+  }
+
+  return false;
+}
+
+if (require.main === module) {
+  (async () => {
+    try {
+      await creeateDBandTables();
+
+      const app = createServer();
+      const { server, io } = await startServer(app);
+
+      const campaignTablesReady = await waitForCampaignTables();
+
+      if (campaignTablesReady) {
+        startAdminMailDeliveryWorker(query);
+      } else {
+        console.error(
+          "[campaign-delivery] Worker was not started because campaign tables are unavailable.",
+        );
+      }
+
+      let shuttingDown = false;
+
+      const shutdown = (signal) => {
+        if (shuttingDown) return;
+
+        shuttingDown = true;
+        console.log(`[server] ${signal} received. Shutting down.`);
+
+        stopAdminMailDeliveryWorker();
+
+        io.close();
+
+        server.close(() => {
+          process.exit(0);
+        });
+
+        setTimeout(() => {
+          process.exit(1);
+        }, 10_000).unref();
+      };
+
+      process.once("SIGINT", () => shutdown("SIGINT"));
+      process.once("SIGTERM", () => shutdown("SIGTERM"));
+    } catch (error) {
+      console.error(
+        "[server] Failed to start:",
+        error?.message || error,
+      );
+
+      process.exit(1);
+    }
+  })();
 }

@@ -48,6 +48,248 @@ module.exports = async function mediasoupSocket(io, pubClient, subClient) {
   const roomBillingPolicies = new Map();
   const roomLimitTimers = new Map();
 
+    function cleanTelemetryText(value, maxLength = 80) {
+    return String(value ?? "")
+      .trim()
+      .slice(0, maxLength);
+  }
+
+  function clampTelemetryNumber(value, min, max) {
+    const number = Number(value);
+
+    if (!Number.isFinite(number)) return null;
+
+    return Math.min(Math.max(number, min), max);
+  }
+
+  function normalizeClientInfo(value = {}) {
+    const source =
+      value && typeof value === "object" ? value : {};
+
+    return {
+      platform: cleanTelemetryText(source.platform, 40) || null,
+      browser: cleanTelemetryText(source.browser, 80) || null,
+      deviceType: cleanTelemetryText(source.deviceType, 40) || null,
+    };
+  }
+
+  function calculateQualityScore({
+    roundTripTimeMs,
+    jitterMs,
+    packetLossPercent,
+  }) {
+    let score = 100;
+
+    if (roundTripTimeMs !== null) {
+      score -= Math.max(0, roundTripTimeMs - 100) * 0.12;
+    }
+
+    if (jitterMs !== null) {
+      score -= Math.max(0, jitterMs - 20) * 0.5;
+    }
+
+    if (packetLossPercent !== null) {
+      score -= packetLossPercent * 8;
+    }
+
+    return Math.round(Math.max(0, Math.min(100, score)));
+  }
+
+  async function recordMeetingSessionEvent(
+    socket,
+    eventType,
+    event = {},
+  ) {
+    const { roomId, userId, attendanceId, meetingId } =
+      socket.data || {};
+
+    if (!roomId || !userId) return;
+
+    const clientInfo = socket.data?.clientInfo || {};
+
+    try {
+      await query(
+        `
+          INSERT INTO meeting_session_events
+          (
+            room_id,
+            meeting_id,
+            user_id,
+            attendance_id,
+            event_type,
+            client_platform,
+            client_browser,
+            device_type,
+            connection_state,
+            metadata
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          String(roomId),
+          meetingId || null,
+          String(userId),
+          attendanceId || null,
+          eventType,
+          clientInfo.platform || null,
+          clientInfo.browser || null,
+          clientInfo.deviceType || null,
+          cleanTelemetryText(event.connectionState, 40) || null,
+          JSON.stringify(event.metadata || {}),
+        ],
+      );
+    } catch (error) {
+      console.error(
+        "[telemetry] Failed to record session event:",
+        error?.message || error,
+      );
+    }
+  }
+
+  async function recordMeetingQualitySample(socket, payload = {}) {
+    const { roomId, userId, attendanceId, meetingId } =
+      socket.data || {};
+
+    if (!roomId || !userId) {
+      throw new Error("Join a meeting before sending telemetry.");
+    }
+
+    const now = Date.now();
+    const lastSampleAt =
+      Number(socket.data?.lastQualityTelemetryAt) || 0;
+
+    /*
+     * Prevent a browser from flooding the database.
+     * One sample every 10 seconds is more than enough for reporting.
+     */
+    if (now - lastSampleAt < 10_000) {
+      return { accepted: false, reason: "rate_limited" };
+    }
+
+    const roundTripTimeMs = clampTelemetryNumber(
+      payload.roundTripTimeMs,
+      0,
+      10_000,
+    );
+
+    const jitterMs = clampTelemetryNumber(
+      payload.jitterMs,
+      0,
+      10_000,
+    );
+
+    const packetLossPercent = clampTelemetryNumber(
+      payload.packetLossPercent,
+      0,
+      100,
+    );
+
+    const inboundBitrateKbps = clampTelemetryNumber(
+      payload.inboundBitrateKbps,
+      0,
+      1_000_000,
+    );
+
+    const outboundBitrateKbps = clampTelemetryNumber(
+      payload.outboundBitrateKbps,
+      0,
+      1_000_000,
+    );
+
+    const connectionState =
+      cleanTelemetryText(payload.connectionState, 40) || null;
+
+    const qualityScore = calculateQualityScore({
+      roundTripTimeMs,
+      jitterMs,
+      packetLossPercent,
+    });
+
+    const isUnstable =
+      qualityScore < 60 ||
+      (packetLossPercent !== null && packetLossPercent >= 3) ||
+      (jitterMs !== null && jitterMs >= 50) ||
+      (roundTripTimeMs !== null && roundTripTimeMs >= 400);
+
+    const clientInfo = socket.data?.clientInfo || {};
+
+    await query(
+      `
+        INSERT INTO meeting_quality_samples
+        (
+          room_id,
+          meeting_id,
+          user_id,
+          attendance_id,
+          client_platform,
+          client_browser,
+          device_type,
+          connection_state,
+          round_trip_time_ms,
+          jitter_ms,
+          packet_loss_percent,
+          inbound_bitrate_kbps,
+          outbound_bitrate_kbps,
+          quality_score,
+          is_unstable,
+          metadata
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        String(roomId),
+        meetingId || null,
+        String(userId),
+        attendanceId || null,
+        clientInfo.platform || null,
+        clientInfo.browser || null,
+        clientInfo.deviceType || null,
+        connectionState,
+        roundTripTimeMs,
+        jitterMs,
+        packetLossPercent,
+        inboundBitrateKbps,
+        outboundBitrateKbps,
+        qualityScore,
+        isUnstable,
+        JSON.stringify({
+          audioPacketsLost: clampTelemetryNumber(
+            payload.audioPacketsLost,
+            0,
+            10_000_000,
+          ),
+          videoPacketsLost: clampTelemetryNumber(
+            payload.videoPacketsLost,
+            0,
+            10_000_000,
+          ),
+        }),
+      ],
+    );
+
+    socket.data.lastQualityTelemetryAt = now;
+
+    if (connectionState) {
+      await recordMeetingSessionEvent(
+        socket,
+        "connection_state_changed",
+        {
+          connectionState,
+          metadata: {
+            qualityScore,
+            unstable: isUnstable,
+          },
+        },
+      );
+    }
+
+    return {
+      accepted: true,
+      qualityScore,
+      unstable: isUnstable,
+    };
+  }
+
   const DEFAULT_FREE_LIMITS = {
     max_meeting_minutes: 40,
     max_participants: 4,
@@ -871,6 +1113,7 @@ module.exports = async function mediasoupSocket(io, pubClient, subClient) {
           isBot = false,
           micOn = true,
           cameraOn = true,
+          clientInfo = {},
         },
         cb,
       ) => {
@@ -972,12 +1215,27 @@ module.exports = async function mediasoupSocket(io, pubClient, subClient) {
 
           socket.join(roomId);
 
+          socket.data.clientInfo = normalizeClientInfo(clientInfo);
+
           if (!isBot) {
             socket.data.attendanceId = await start_attendance_service(query, {
               roomId,
               userId,
               userName,
             });
+
+            const attendanceRows = await query(
+              `
+                SELECT meeting_id
+                FROM meeting_attendance
+                WHERE id = ?
+                LIMIT 1
+              `,
+              [socket.data.attendanceId],
+            );
+
+            socket.data.meetingId =
+              attendanceRows?.[0]?.meeting_id || null;
           }
 
           const joinResult = await joinRoom(
@@ -1033,6 +1291,16 @@ module.exports = async function mediasoupSocket(io, pubClient, subClient) {
           socket.emit("joined", payload);
 
           if (!isBot) {
+            void recordMeetingSessionEvent(socket, "joined", {
+              metadata: {
+                mic_on: Boolean(micOn),
+                camera_on: Boolean(cameraOn),
+                is_host: Boolean(joinResult.isHost),
+              },
+            });
+          }
+
+          if (!isBot) {
             socket.to(roomId).emit("participant-joined", {
               roomId,
               userId,
@@ -1059,6 +1327,35 @@ module.exports = async function mediasoupSocket(io, pubClient, subClient) {
           socket.emit("error", {
             action: "join",
             error: err.message,
+          });
+        }
+      },
+    );
+
+    socket.on(
+      "meeting-telemetry",
+      async (payload = {}, callback) => {
+        try {
+          const result = await recordMeetingQualitySample(
+            socket,
+            payload,
+          );
+
+          callback?.({
+            success: true,
+            ...result,
+          });
+        } catch (error) {
+          console.error(
+            "[telemetry] Failed to store quality sample:",
+            error?.message || error,
+          );
+
+          callback?.({
+            success: false,
+            error:
+              error?.message ||
+              "Unable to store meeting quality telemetry.",
           });
         }
       },
@@ -1605,6 +1902,12 @@ module.exports = async function mediasoupSocket(io, pubClient, subClient) {
 
         removeRoomParticipant(roomId, userId);
 
+        void recordMeetingSessionEvent(socket, "left", {
+          metadata: {
+            reason: "left",
+          },
+        });
+
         await finish_attendance_service(query, {
           attendanceId: socket.data?.attendanceId,
           roomId,
@@ -1671,6 +1974,12 @@ module.exports = async function mediasoupSocket(io, pubClient, subClient) {
           }
 
           removeRoomParticipant(roomId, userId);
+
+          void recordMeetingSessionEvent(socket, "left", {
+            metadata: {
+              reason: "disconnected",
+            },
+          });
 
           await finish_attendance_service(query, {
             attendanceId: socket.data?.attendanceId,
