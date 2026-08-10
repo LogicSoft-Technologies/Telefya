@@ -441,14 +441,61 @@ module.exports = async function mediasoupSocket(io, pubClient, subClient) {
     return listRoomParticipants(roomId).length;
   }
 
-  function canJoinByParticipantLimit(roomId, userId, policy) {
+  async function getHostParticipantLimitOverride(userId) {
+    if (!userId) return null;
+
+    try {
+      const rows = await query(
+        `
+          SELECT meeting_participant_limit_override
+          FROM users
+          WHERE user_id = ?
+          LIMIT 1
+        `,
+        [String(userId)],
+      );
+
+      const value = rows?.[0]?.meeting_participant_limit_override;
+
+      if (value === null || value === undefined) {
+        return null;
+      }
+
+      const parsed = Number(value);
+
+      return Number.isInteger(parsed) && parsed >= 0
+        ? parsed
+        : null;
+    } catch (error) {
+      console.error("[Billing] Unable to load participant override:", {
+        userId,
+        message: error?.message,
+      });
+
+      return null;
+    }
+  }
+
+  async function canJoinByParticipantLimit(roomId, userId, policy) {
     const participants = getRoomParticipants(roomId);
     const alreadyJoined = participants.has(userId);
     const currentCount = getBillableParticipantCount(roomId);
-    const maxParticipants = normalizeLimitNumber(
-      policy?.limits?.max_participants,
-      DEFAULT_FREE_LIMITS.max_participants,
+
+    const override = await getHostParticipantLimitOverride(
+      policy?.hostUserId,
     );
+
+    // 0 explicitly means unlimited participants.
+    if (override === 0) {
+      return { allowed: true };
+    }
+
+    const maxParticipants =
+      override ??
+      normalizeLimitNumber(
+        policy?.limits?.max_participants,
+        DEFAULT_FREE_LIMITS.max_participants,
+      );
 
     if (!alreadyJoined && currentCount >= maxParticipants) {
       return {
@@ -457,9 +504,7 @@ module.exports = async function mediasoupSocket(io, pubClient, subClient) {
         message:
           "This meeting has reached the " +
           maxParticipants +
-          "-participant limit for the " +
-          (policy?.plan_name || "current") +
-          " plan.",
+          "-participant limit.",
       };
     }
 
@@ -1174,7 +1219,7 @@ module.exports = async function mediasoupSocket(io, pubClient, subClient) {
           });
 
           if (!isBot) {
-            const participantAccess = canJoinByParticipantLimit(
+            const participantAccess = await canJoinByParticipantLimit(
               roomId,
               userId,
               initialBillingPolicy,

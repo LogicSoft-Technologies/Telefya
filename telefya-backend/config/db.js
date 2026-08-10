@@ -92,6 +92,7 @@ CREATE TABLE IF NOT EXISTS users (
   email_verification_token VARCHAR(255),
   verification_otp VARCHAR(10),
   is_verified BOOLEAN DEFAULT FALSE,
+  meeting_participant_limit_override INT NULL,
   remember_token VARCHAR(255),
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
@@ -1089,6 +1090,14 @@ async function migrateUsersForAdmin() {
         ALTER TABLE users
         ADD COLUMN marketing_opt_in_at DATETIME NULL
         AFTER marketing_opt_in
+      `);
+    }
+
+    if (!columns.has("meeting_participant_limit_override")) {
+      await query(`
+        ALTER TABLE users
+        ADD COLUMN meeting_participant_limit_override INT NULL
+        AFTER marketing_opt_in_at
       `);
     }
 

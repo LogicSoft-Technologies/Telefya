@@ -10,6 +10,7 @@ const {
   list_admin_users_controller,
   get_admin_user_controller,
   update_admin_user_status_controller,
+  update_admin_user_participant_limit_controller,
   list_admin_segments_controller,
   create_admin_segment_controller,
   preview_admin_audience_controller,
@@ -75,6 +76,12 @@ admin_router.patch(
   "/users/:userId/account-status",
   require_admin_roles("super_admin", "admin"),
   update_admin_user_status_controller,
+);
+
+admin_router.patch(
+  "/users/:userId/participant-limit",
+  require_admin_roles("super_admin", "admin"),
+  update_admin_user_participant_limit_controller,
 );
 
 admin_router.get(

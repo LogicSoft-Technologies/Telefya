@@ -21,6 +21,7 @@ import { toast } from "sonner";
 import { PageHeader } from "@/components/admin/PageHeader";
 import {
   getAdminUser,
+  updateAdminUserParticipantLimit,
   updateAdminUserStatus,
 } from "@/lib/api/admin";
 import type { AccountStatus, AdminUser } from "@/types/admin";
@@ -99,6 +100,35 @@ export default function UserDetailsPage() {
     },
   });
 
+  const participantLimitMutation = useMutation({
+    mutationFn: (override: number | null) =>
+      updateAdminUserParticipantLimit(userId, override),
+
+    onSuccess: (_, override) => {
+      toast.success(
+        override === 0
+          ? "Unlimited participant access enabled."
+          : "Plan participant limit restored.",
+      );
+
+      void queryClient.invalidateQueries({
+        queryKey: ["admin-user", userId],
+      });
+
+      void queryClient.invalidateQueries({
+        queryKey: ["admin-users"],
+      });
+    },
+
+    onError: (error) => {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Unable to update participant access.",
+      );
+    },
+  });
+
   const details = userQuery.data?.data;
   const user = details?.user;
 
@@ -147,6 +177,9 @@ export default function UserDetailsPage() {
     user.account_status === "suspended" ? "suspended" : "active";
 
   const isActive = status === "active";
+
+  const hasUnlimitedParticipants =
+    user.meeting_participant_limit_override === 0;
 
   const initials =
     getFullName(user)
@@ -311,6 +344,44 @@ export default function UserDetailsPage() {
               </dd>
             </div>
           </dl>
+
+          <div className="mt-6 rounded-2xl border border-border bg-navy-50 p-5">
+            <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
+              <div>
+                <p className="text-sm font-black text-navy-900">
+                  Participant capacity
+                </p>
+
+                <p className="mt-1 text-sm leading-6 text-navy-500">
+                  {hasUnlimitedParticipants
+                    ? "Unlimited participants are enabled for meetings hosted by this account."
+                    : "This account uses its subscription plan participant limit."}
+                </p>
+              </div>
+
+              <button
+                type="button"
+                disabled={participantLimitMutation.isPending}
+                onClick={() =>
+                  participantLimitMutation.mutate(
+                    hasUnlimitedParticipants ? null : 0,
+                  )
+                }
+                className={[
+                  "inline-flex shrink-0 items-center justify-center rounded-xl px-4 py-3 text-sm font-black transition disabled:cursor-not-allowed disabled:opacity-60",
+                  hasUnlimitedParticipants
+                    ? "border border-border bg-white text-navy-800 hover:bg-navy-100"
+                    : "bg-telefya-blue text-white hover:bg-telefya-violet",
+                ].join(" ")}
+              >
+                {participantLimitMutation.isPending
+                  ? "Updating..."
+                  : hasUnlimitedParticipants
+                    ? "Restore plan limit"
+                    : "Enable unlimited"}
+              </button>
+            </div>
+          </div>
         </article>
       </section>
     </div>

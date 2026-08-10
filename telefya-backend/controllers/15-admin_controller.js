@@ -147,6 +147,42 @@ const update_admin_user_status_controller = async (req, res) => {
   }
 };
 
+const update_admin_user_participant_limit_controller = async (
+  req,
+  res,
+) => {
+  try {
+    const admin = requireAdmin(req, res);
+    if (!admin) return;
+
+    const userId = String(req.params.userId || "").trim();
+
+    if (!userId) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "A valid user is required.",
+        status: 400,
+      });
+    }
+
+    return ok(
+      res,
+      await service.update_admin_user_participant_limit_service(
+        query,
+        admin,
+        userId,
+        req.body,
+        {
+          ipAddress: getClientIp(req),
+        },
+      ),
+    );
+  } catch (error) {
+    return fail(res, error);
+  }
+};
+
 const list_admin_segments_controller = async (req, res) => {
   try {
     const admin = requireAdmin(req, res);
@@ -272,6 +308,7 @@ module.exports = {
   list_admin_users_controller,
   get_admin_user_controller,
   update_admin_user_status_controller,
+  update_admin_user_participant_limit_controller,
   list_admin_segments_controller,
   create_admin_segment_controller,
   preview_admin_audience_controller,

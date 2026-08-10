@@ -57,6 +57,22 @@ function normalizeAccountStatus(value) {
   return null;
 }
 
+function normalizeParticipantLimitOverride(value) {
+  if (value === null || value === undefined) return null;
+
+  const parsed = Number(value);
+
+  if (
+    !Number.isInteger(parsed) ||
+    parsed < 0 ||
+    parsed > 100000
+  ) {
+    return null;
+  }
+
+  return parsed;
+}
+
 function normalizeAdminRole(value) {
   const role = cleanString(value).toLowerCase();
 
@@ -327,6 +343,7 @@ const list_admin_users_service = async (
         u.profile_image,
         u.is_verified,
         u.account_status,
+        u.meeting_participant_limit_override,
         u.marketing_opt_in,
         u.marketing_opt_in_at,
         u.created_at,
@@ -382,6 +399,7 @@ const get_admin_user_service = async (
         u.profile_image,
         u.is_verified,
         u.account_status,
+        u.meeting_participant_limit_override,
         u.marketing_opt_in,
         u.marketing_opt_in_at,
         u.created_at,
@@ -538,6 +556,100 @@ const update_admin_user_status_service = async (
     data: {
       user_id: targetId,
       account_status: accountStatus,
+    },
+  };
+};
+
+const update_admin_user_participant_limit_service = async (
+  db_query,
+  admin,
+  targetUserId,
+  payload = {},
+  context = {},
+) => {
+  const targetId = cleanString(targetUserId);
+
+  if (!targetId) {
+    throw new Error("A valid user is required.");
+  }
+
+  if (
+    !Object.prototype.hasOwnProperty.call(
+      payload,
+      "meeting_participant_limit_override",
+    )
+  ) {
+    throw new Error("Choose a valid participant limit.");
+  }
+
+  const rawOverride = payload.meeting_participant_limit_override;
+
+  const override =
+    rawOverride === null
+      ? null
+      : normalizeParticipantLimitOverride(rawOverride);
+
+  if (rawOverride !== null && override === null) {
+    throw new Error(
+      "Participant limit must be 0 for unlimited or a whole number.",
+    );
+  }
+
+  const users = await db_query(
+    `
+      SELECT
+        user_id,
+        email,
+        meeting_participant_limit_override
+      FROM users
+      WHERE user_id = ?
+      LIMIT 1
+    `,
+    [targetId],
+  );
+
+  const target = users?.[0];
+
+  if (!target) {
+    throw new Error("User not found.");
+  }
+
+  await db_query(
+    `
+      UPDATE users
+      SET meeting_participant_limit_override = ?
+      WHERE user_id = ?
+    `,
+    [override, targetId],
+  );
+
+  await writeAuditLog(
+    db_query,
+    admin.userId,
+    "user.participant_limit_updated",
+    {
+      targetType: "user",
+      targetId,
+      metadata: {
+        target_email: target.email,
+        previous_override:
+          target.meeting_participant_limit_override,
+        next_override: override,
+        unlimited: override === 0,
+      },
+      ipAddress: context.ipAddress,
+    },
+  );
+
+  return {
+    success: true,
+    message:
+      override === 0
+        ? "Unlimited participant access enabled."
+        : "Participant capacity restored to the plan limit.",
+    data: {
+      user_id: targetId,
+      meeting_participant_limit_override: override,
     },
   };
 };
@@ -1185,6 +1297,7 @@ module.exports = {
   list_admin_users_service,
   get_admin_user_service,
   update_admin_user_status_service,
+  update_admin_user_participant_limit_service,
   list_admin_segments_service,
   create_admin_segment_service,
   preview_admin_audience_service,

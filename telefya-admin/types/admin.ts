@@ -44,6 +44,7 @@ export type AdminUser = {
   plan_code?: string;
   subscription_status?: string;
   admin_role?: AdminRole | null;
+  meeting_participant_limit_override?: number | null;
 };
 
 export type AdminUserDetails = {

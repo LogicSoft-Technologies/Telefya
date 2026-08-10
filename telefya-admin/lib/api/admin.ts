@@ -82,6 +82,21 @@ export function updateAdminUserStatus(
   });
 }
 
+export function updateAdminUserParticipantLimit(
+  userId: string,
+  meetingParticipantLimitOverride: number | null,
+) {
+  return apiClient.patch<
+    ApiResponse<{
+      user_id: string;
+      meeting_participant_limit_override: number | null;
+    }>
+  >(`/admin/users/${encodeURIComponent(userId)}/participant-limit`, {
+    meeting_participant_limit_override:
+      meetingParticipantLimitOverride,
+  });
+}
+
 export function listAudienceSegments() {
   return apiClient.get<ApiResponse<AudienceSegment[]>>("/admin/segments");
 }

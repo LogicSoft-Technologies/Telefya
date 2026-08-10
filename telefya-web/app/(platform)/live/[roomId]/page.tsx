@@ -39,7 +39,14 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { LiveVideoTile } from "@/components/platform/live-video-tile";
 import { getSavedUser } from "@/lib/auth/session";
 import { useMediasoupRoom } from "@/hooks/use-mediasoup-room";
@@ -373,6 +380,13 @@ export default function LiveRoomPage() {
   const [customBackgrounds, setCustomBackgrounds] = useState<
     BackgroundOption[]
   >([]);
+
+  // Controls whether the floating header / dock overlay is visible on
+  // mobile. WhatsApp-style: the video always fills the screen, and the
+  // chrome fades away after a few seconds of inactivity, then reappears
+  // the moment the person taps the stage.
+  const [controlsVisible, setControlsVisible] = useState(true);
+  const controlsTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     setCustomBackgrounds(loadStoredCustomBackgrounds());
@@ -729,6 +743,74 @@ export default function LiveRoomPage() {
   const participantCount = Math.max(1, allParticipantTiles.length);
   const recordingReady = room.connected && Boolean(room.localStream);
 
+  // --- Auto-hiding overlay controls (mobile full-screen stage) ---------
+
+  const resetControlsTimer = useCallback(() => {
+    setControlsVisible(true);
+
+    if (controlsTimerRef.current !== null) {
+      window.clearTimeout(controlsTimerRef.current);
+    }
+
+    controlsTimerRef.current = window.setTimeout(() => {
+      setControlsVisible(false);
+    }, 4000);
+  }, []);
+
+  useEffect(() => {
+    if (!started || waitingForHost || requestDeclined) return;
+
+    resetControlsTimer();
+
+    return () => {
+      if (controlsTimerRef.current !== null) {
+        window.clearTimeout(controlsTimerRef.current);
+        controlsTimerRef.current = null;
+      }
+    };
+  }, [started, waitingForHost, requestDeclined, resetControlsTimer]);
+
+  useEffect(() => {
+    if (!started || waitingForHost || requestDeclined) return;
+
+    // Keep the overlay pinned open while a sheet/menu is open so people
+    // aren't fighting a fading dock while they're using it.
+    if (moreOpen || participantsOpen) {
+      setControlsVisible(true);
+
+      if (controlsTimerRef.current !== null) {
+        window.clearTimeout(controlsTimerRef.current);
+        controlsTimerRef.current = null;
+      }
+
+      return;
+    }
+
+    resetControlsTimer();
+  }, [
+    moreOpen,
+    participantsOpen,
+    started,
+    waitingForHost,
+    requestDeclined,
+    resetControlsTimer,
+  ]);
+
+  function handleStageTap() {
+    setControlsVisible((visible) => {
+      const next = !visible;
+
+      if (next) {
+        resetControlsTimer();
+      } else if (controlsTimerRef.current !== null) {
+        window.clearTimeout(controlsTimerRef.current);
+        controlsTimerRef.current = null;
+      }
+
+      return next;
+    });
+  }
+
   async function copyRoomLink() {
     await navigator.clipboard.writeText(window.location.href);
     setCopied(true);
@@ -1015,14 +1097,32 @@ export default function LiveRoomPage() {
   return (
     <main
       className={[
-        expanded ? "fixed inset-0 z-50" : "h-[calc(100vh-68px)]",
+        // Mobile is always an immersive, edge-to-edge full screen call
+        // (like WhatsApp / FaceTime). Desktop keeps the original
+        // in-flow layout unless "Focus mode" is switched on.
+        "fixed inset-0 z-50",
+        expanded
+          ? "xl:fixed xl:inset-0 xl:z-50"
+          : "xl:static xl:z-auto xl:h-[calc(100vh-68px)]",
         "grid overflow-hidden telefya-mesh-bg",
       ].join(" ")}
     >
       <RoomStyles />
 
-      <section className="relative flex min-h-0 flex-col overflow-hidden telefya-mesh-bg">
-        <header className="flex h-[60px] shrink-0 items-center justify-between gap-3 border-b border-white/10 bg-gradient-to-b from-white/[0.04] to-transparent px-3 sm:h-[68px] sm:gap-4 sm:px-4">
+      <section className="relative flex h-full min-h-0 flex-col overflow-hidden telefya-mesh-bg">
+        {/* Header: floats on top of the video on mobile and fades with
+            the rest of the chrome; sits as a normal static bar on
+            desktop. */}
+        <header
+          className={[
+            "absolute inset-x-0 top-0 z-40 flex items-center justify-between gap-3 px-3 pb-3 pt-[calc(0.75rem+env(safe-area-inset-top))] transition-all duration-300 ease-out",
+            "bg-gradient-to-b from-black/75 via-black/25 to-transparent",
+            controlsVisible
+              ? "translate-y-0 opacity-100"
+              : "pointer-events-none -translate-y-3 opacity-0",
+            "xl:static xl:z-auto xl:h-[68px] xl:translate-y-0 xl:gap-4 xl:border-b xl:border-white/10 xl:bg-gradient-to-b xl:from-white/[0.04] xl:to-transparent xl:px-4 xl:pb-0 xl:pt-0 xl:opacity-100 xl:pointer-events-auto",
+          ].join(" ")}
+        >
           <div className="flex min-w-0 items-center gap-3 sm:gap-4">
             <Image
               src="/images/telefya-logo.png"
@@ -1082,7 +1182,7 @@ export default function LiveRoomPage() {
         </header>
 
         {room.error || room.recordingError || billingNotice ? (
-          <div className="mx-3 mt-3 grid gap-2 sm:mx-4">
+          <div className="relative z-40 mx-3 mt-[calc(4.5rem+env(safe-area-inset-top))] grid gap-2 sm:mx-4 xl:mt-3">
             {room.error ? (
               <NoticeBanner type="error" message={room.error} />
             ) : null}
@@ -1102,16 +1202,23 @@ export default function LiveRoomPage() {
 
         <div
           className={[
-            "grid min-h-0 flex-1 gap-2 p-1.5 pb-32 sm:gap-3 sm:p-2 xl:pb-2",
+            // Mobile: fills the entire section, edge-to-edge, behind the
+            // floating header/dock overlays. Desktop: normal padded grid.
+            "absolute inset-0 z-0 grid",
+            "xl:static xl:min-h-0 xl:flex-1 xl:gap-3 xl:p-2",
             chatOpen ? "xl:grid-cols-[minmax(0,1fr)_320px]" : "xl:grid-cols-1",
           ].join(" ")}
         >
-          <div className="relative flex min-h-0 flex-col gap-2 sm:gap-3">
-            <div className="telefya-stage-bg relative min-h-[340px] flex-1 overflow-hidden rounded-2xl ring-1 ring-white/10 sm:min-h-[440px]">
+          <div className="absolute inset-0 flex flex-col xl:static xl:min-h-0 xl:gap-3">
+            <div
+              onClick={handleStageTap}
+              className="telefya-stage-bg absolute inset-0 overflow-hidden xl:relative xl:h-full xl:min-h-[440px] xl:flex-1 xl:rounded-2xl xl:ring-1 xl:ring-white/10"
+            >
               {primaryTile ? (
                 <StageTileView
                   tile={primaryTile}
                   recording={room.recording}
+                  controlsVisible={controlsVisible}
                   large
                 />
               ) : (
@@ -1131,7 +1238,7 @@ export default function LiveRoomPage() {
                   {railTiles.map((tile, index) => (
                     <div
                       key={tile.id}
-                      className={`telefya-in-right telefya-stagger-${Math.min(index + 1, 8)} pointer-events-auto h-24 w-40 shrink-0 overflow-hidden rounded-xl shadow-2xl`}
+                      className={`telefya-in-right telefya-stagger-${Math.min(index + 1, 8)} pointer-events-auto h-28 w-44 shrink-0 overflow-hidden rounded-xl shadow-2xl`}
                     >
                       <PipTile tile={tile} />
                     </div>
@@ -1140,12 +1247,23 @@ export default function LiveRoomPage() {
               ) : null}
             </div>
 
+            {/* Mobile PiP rail: floats above the dock instead of taking
+                its own row, and is noticeably taller so a person's face
+                (or their name, when the camera is off) is always
+                legible. */}
             {railTiles.length ? (
-              <div className="telefya-rail flex snap-x snap-mandatory gap-2 overflow-x-auto pb-0.5 xl:hidden">
+              <div
+                className={[
+                  "telefya-rail pointer-events-auto absolute inset-x-0 z-20 flex snap-x snap-mandatory gap-2.5 overflow-x-auto px-3 transition-[bottom] duration-300 ease-out xl:hidden",
+                  controlsVisible
+                    ? "bottom-[calc(6.75rem+env(safe-area-inset-bottom))]"
+                    : "bottom-[calc(1rem+env(safe-area-inset-bottom))]",
+                ].join(" ")}
+              >
                 {railTiles.map((tile, index) => (
                   <div
                     key={tile.id}
-                    className={`telefya-in-fade-up telefya-stagger-${Math.min(index + 1, 8)} h-[86px] w-[132px] shrink-0 snap-start overflow-hidden rounded-xl sm:h-[96px] sm:w-[152px]`}
+                    className={`telefya-in-fade-up telefya-stagger-${Math.min(index + 1, 8)} h-[136px] w-[108px] shrink-0 snap-start overflow-hidden rounded-2xl shadow-2xl ring-1 ring-white/15 sm:h-[156px] sm:w-[122px]`}
                   >
                     <PipTile tile={tile} />
                   </div>
@@ -1352,7 +1470,16 @@ export default function LiveRoomPage() {
             />
           </div>
 
-          <div className="pointer-events-auto flex w-full max-w-[340px] items-center justify-between gap-1 rounded-full border border-white/10 bg-white/10 px-2 py-2 shadow-2xl backdrop-blur-2xl xl:hidden">
+          {/* Mobile dock: floats directly over the video and fades away
+              with the rest of the chrome after a few seconds idle. */}
+          <div
+            className={[
+              "flex w-full max-w-[340px] items-center justify-between gap-1 rounded-full border border-white/10 bg-white/10 px-2 py-2 shadow-2xl backdrop-blur-2xl transition-all duration-300 ease-out xl:hidden",
+              controlsVisible
+                ? "translate-y-0 opacity-100 pointer-events-auto"
+                : "translate-y-6 opacity-0 pointer-events-none",
+            ].join(" ")}
+          >
             <DockButton
               size="md"
               active={!room.micOn}
@@ -2095,15 +2222,17 @@ function StageTileView({
   tile,
   large,
   recording,
+  controlsVisible = true,
 }: {
   tile: StageTile;
   large?: boolean;
   recording?: boolean;
+  controlsVisible?: boolean;
 }) {
   const showVideo = Boolean(tile.stream && tile.cameraOn !== false);
 
   return (
-    <div className="telefya-in-scale group relative h-full w-full overflow-hidden rounded-xl bg-black ring-1 ring-white/5">
+    <div className="telefya-in-scale group relative h-full w-full overflow-hidden bg-black xl:rounded-xl xl:ring-1 xl:ring-white/5">
       {recording ? (
         <div className="absolute left-3 top-3 z-20 inline-flex items-center gap-2 rounded-full bg-red-500/90 px-3 py-1.5 text-xs font-black text-white shadow-soft ring-1 ring-white/20">
           <span className="h-2 w-2 animate-pulse rounded-full bg-white" />
@@ -2128,7 +2257,14 @@ function StageTileView({
       <div className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-black/70 to-transparent" />
 
       {large ? (
-        <div className="absolute bottom-2.5 left-2.5 z-20 flex max-w-[calc(100%-20px)] items-center gap-1.5 overflow-hidden rounded-full bg-black/55 py-1.5 pl-2.5 pr-3 text-sm font-black text-white ring-1 ring-white/10 backdrop-blur-md">
+        <div
+          className={[
+            "absolute left-2.5 z-20 flex max-w-[calc(100%-20px)] items-center gap-1.5 overflow-hidden rounded-full bg-black/55 py-1.5 pl-2.5 pr-3 text-sm font-black text-white ring-1 ring-white/10 backdrop-blur-md transition-[bottom] duration-300 ease-out xl:bottom-2.5",
+            controlsVisible
+              ? "bottom-[calc(6.75rem+env(safe-area-inset-bottom))]"
+              : "bottom-[calc(1rem+env(safe-area-inset-bottom))]",
+          ].join(" ")}
+        >
           {tile.micOn === false ? (
             <MicOff size={14} className="shrink-0 text-red-300" />
           ) : (
@@ -2166,7 +2302,7 @@ function PipTile({ tile }: { tile: StageTile }) {
   const label = tile.isSelf ? "You" : tile.name.split(" ")[0] || tile.name;
 
   return (
-    <div className="relative h-full w-full overflow-hidden rounded-xl bg-black ring-1 ring-white/15">
+    <div className="relative h-full w-full overflow-hidden rounded-2xl bg-black ring-1 ring-white/15">
       {showVideo ? (
         <LiveVideoTile
           stream={tile.stream as MediaStream}
@@ -2182,7 +2318,13 @@ function PipTile({ tile }: { tile: StageTile }) {
         <AvatarTile tile={{ ...tile, name: label }} compact />
       )}
 
-      <span className="pointer-events-none absolute bottom-1.5 left-1.5 z-20 rounded-full bg-black/55 px-2 py-0.5 text-[10px] font-black text-white ring-1 ring-white/10 backdrop-blur-md">
+      {tile.micOn === false ? (
+        <span className="pointer-events-none absolute right-1.5 top-1.5 z-20 grid h-5 w-5 place-items-center rounded-full bg-red-500/80 text-white ring-1 ring-white/20 backdrop-blur-md">
+          <MicOff size={11} />
+        </span>
+      ) : null}
+
+      <span className="pointer-events-none absolute inset-x-0 bottom-0 truncate bg-gradient-to-t from-black/70 to-transparent px-2 pb-1.5 pt-4 text-[11px] font-black text-white">
         {label}
       </span>
     </div>
@@ -2191,7 +2333,12 @@ function PipTile({ tile }: { tile: StageTile }) {
 
 function AvatarTile({ tile, compact }: { tile: StageTile; compact?: boolean }) {
   return (
-    <div className="telefya-stage-bg grid h-full min-h-[140px] place-items-center text-white sm:min-h-[180px]">
+    <div
+      className={[
+        "telefya-stage-bg grid h-full place-items-center text-white",
+        compact ? "min-h-[100px]" : "min-h-[140px] sm:min-h-[180px]",
+      ].join(" ")}
+    >
       <div className="grid place-items-center text-center">
         <div
           className={[
@@ -2204,14 +2351,9 @@ function AvatarTile({ tile, compact }: { tile: StageTile; compact?: boolean }) {
           {getInitials(tile.name)}
         </div>
         {!compact ? (
-          <>
-            <p className="mt-3 max-w-[220px] truncate text-base font-black text-white sm:mt-4 sm:text-xl">
-              {tile.name}
-            </p>
-            <p className="mt-1 text-[11px] font-bold text-white/45 sm:text-xs">
-              Camera off
-            </p>
-          </>
+          <p className="mt-3 text-xs font-bold uppercase tracking-[0.14em] text-white/40 sm:mt-4 sm:text-sm">
+            Camera off
+          </p>
         ) : null}
       </div>
     </div>
@@ -2289,7 +2431,7 @@ function Toast({
   return (
     <div
       className={[
-        "telefya-toast-in absolute left-3 right-3 top-[72px] z-40 flex items-start gap-3 rounded-lg border border-white/10 bg-[#0c1734]/95 px-4 py-3 text-xs font-semibold shadow-lg backdrop-blur-xl sm:left-auto sm:right-5 sm:top-[84px] sm:max-w-xs",
+        "telefya-toast-in absolute left-3 right-3 top-[calc(4.5rem+env(safe-area-inset-top))] z-40 flex items-start gap-3 rounded-lg border border-white/10 bg-[#0c1734]/95 px-4 py-3 text-xs font-semibold shadow-lg backdrop-blur-xl sm:left-auto sm:right-5 sm:top-[84px] sm:max-w-xs",
         textTone[type],
       ].join(" ")}
     >
@@ -2480,4 +2622,4 @@ function StatusLine({ label, value }: { label: string; value: string }) {
       </span>
     </div>
   );
-}
+};
