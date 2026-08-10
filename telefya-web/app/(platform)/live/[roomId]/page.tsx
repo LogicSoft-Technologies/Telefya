@@ -2256,23 +2256,7 @@ function StageTileView({
 
       <div className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-black/70 to-transparent" />
 
-      {large ? (
-        <div
-          className={[
-            "absolute left-2.5 z-20 flex max-w-[calc(100%-20px)] items-center gap-1.5 overflow-hidden rounded-full bg-black/55 py-1.5 pl-2.5 pr-3 text-sm font-black text-white ring-1 ring-white/10 backdrop-blur-md transition-[bottom] duration-300 ease-out xl:bottom-2.5",
-            controlsVisible
-              ? "bottom-[calc(6.75rem+env(safe-area-inset-bottom))]"
-              : "bottom-[calc(1rem+env(safe-area-inset-bottom))]",
-          ].join(" ")}
-        >
-          {tile.micOn === false ? (
-            <MicOff size={14} className="shrink-0 text-red-300" />
-          ) : (
-            <Mic size={14} className="shrink-0 text-emerald-300" />
-          )}
-          <span className="min-w-0 truncate">{tile.name}</span>
-        </div>
-      ) : (
+      {!large ? (
         <div
           className={[
             "absolute bottom-1.5 left-1.5 z-20 grid h-5 w-5 place-items-center rounded-full backdrop-blur-md",
@@ -2286,7 +2270,7 @@ function StageTileView({
             <Mic size={11} className="text-emerald-300" />
           )}
         </div>
-      )}
+      ) : null}
 
       {tile.cameraOn === false ? (
         <div className="absolute right-2.5 top-2.5 z-20 rounded-full bg-black/55 p-1.5 text-white/80 ring-1 ring-white/10 backdrop-blur-md">
