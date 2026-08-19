@@ -40,6 +40,21 @@ const RECORDING_FPS = Math.min(
   30,
 );
 
+const RTP_INPUT_BUFFER_SIZE = Math.min(
+  Math.max(Number(process.env.RECORDING_RTP_INPUT_BUFFER_SIZE || 16777216), 1048576),
+  33554432,
+);
+
+const RTP_REORDER_QUEUE_SIZE = Math.min(
+  Math.max(Number(process.env.RECORDING_RTP_REORDER_QUEUE_SIZE || 1024), 128),
+  4096,
+);
+
+const RTP_MAX_DELAY_US = Math.min(
+  Math.max(Number(process.env.RECORDING_RTP_MAX_DELAY_US || 2500000), 500000),
+  10000000,
+);
+
 const activeRecordings = new Map();
 
 async function ensureDir(directory) {
@@ -82,8 +97,9 @@ async function probeRecordingFile(filePath) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.env.FFPROBE_PATH || "ffprobe", [
       "-v", "error",
+      "-count_frames",
       "-show_entries", "format=format_name,duration",
-      "-show_entries", "stream=codec_type,codec_name,width,height",
+      "-show_entries", "stream=codec_type,codec_name,width,height,nb_read_frames,avg_frame_rate",
       "-of", "json",
       filePath,
     ], { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
@@ -101,10 +117,27 @@ async function probeRecordingFile(filePath) {
 
       try {
         const data = JSON.parse(stdout);
-        const hasVideo = data.streams?.some((stream) => stream.codec_type === "video");
+        const videoStream = data.streams?.find((stream) => stream.codec_type === "video");
+        const hasVideo = Boolean(videoStream);
         const isMp4 = String(data.format?.format_name || "").includes("mp4");
         if (!hasVideo || !isMp4) {
           reject(new Error("FFprobe did not find a playable MP4 video stream."));
+          return;
+        }
+
+        const duration = Number(data.format?.duration || 0);
+        const frameCount = Number(videoStream.nb_read_frames || 0);
+        const minimumExpectedFrames = Math.max(
+          3,
+          Math.floor(duration * Math.max(2, RECORDING_FPS * 0.1)),
+        );
+
+        if (!Number.isFinite(frameCount) || frameCount < minimumExpectedFrames) {
+          reject(
+            new Error(
+              `Recording video was incomplete (${frameCount || 0} frames for ${duration.toFixed(1)} seconds).`,
+            ),
+          );
           return;
         }
         resolve(data);
@@ -362,7 +395,7 @@ function buildRecordingFilter({
   filters.push(`[scene8]drawtext=fontfile='${fontFile}':text='REC':fontcolor=white:fontsize=12:x=${canvasWidth - 66}:y=${isMobile ? 29 : 24}[scene9]`);
   filters.push(`[scene9]drawtext=fontfile='${fontFile}':text='Chat & activity':fontcolor=white:fontsize=${isMobile ? 18 : 17}:x=${chatX + 18}:y=${chatY + 20}[scene10]`);
   filters.push(`[scene10]drawtext=fontfile='${fontFile}':text='Meeting updates':fontcolor=0x8fa5cc:fontsize=${isMobile ? 13 : 12}:x=${chatX + 18}:y=${chatY + 45}[scene11]`);
-  filters.push(`[scene11]drawtext=fontfile='${fontFile}':textfile='${activityPath}':reload=1:fontcolor=0xdbeafe:fontsize=${isMobile ? 15 : 14}:line_spacing=${isMobile ? 12 : 10}:x=${chatX + 18}:y=${chatY + 82}[scene12]`);
+  filters.push(`[scene11]drawtext=fontfile='${fontFile}':textfile='${activityPath}':reload=60:fontcolor=0xdbeafe:fontsize=${isMobile ? 15 : 14}:line_spacing=${isMobile ? 12 : 10}:x=${chatX + 18}:y=${chatY + 82}[scene12]`);
 
   let scene = "[scene12]";
   controls.forEach((label, index) => {
@@ -405,15 +438,15 @@ function buildFfmpegArgs({ sdpPath, outputPath, audioCount, videoCount, videoSou
     "-protocol_whitelist", "file,udp,rtp",
     "-thread_queue_size", "8192",
     "-fflags", "+genpts+igndts+discardcorrupt",
-    "-flags", "low_delay",
-    "-use_wallclock_as_timestamps", "1",
     "-analyzeduration", "15000000",
     "-probesize", "10000000",
-    "-max_delay", "500000",
+    "-reorder_queue_size", String(RTP_REORDER_QUEUE_SIZE),
+    "-buffer_size", String(RTP_INPUT_BUFFER_SIZE),
+    "-max_delay", String(RTP_MAX_DELAY_US),
     "-f", "sdp", "-i", sdpPath,
   ];
 
-  if (hasWatermark) args.push("-loop", "1", "-framerate", "30", "-i", watermarkPath);
+  if (hasWatermark) args.push("-loop", "1", "-framerate", String(RECORDING_FPS), "-i", watermarkPath);
 
   const filter = buildRecordingFilter({ audioCount, videoCount, videoSources, recordingLayout, hasWatermark, activityOverlayPath, fontPath });
   args.push("-filter_complex", filter.filterComplex, "-map", filter.videoOutput);
@@ -421,9 +454,9 @@ function buildFfmpegArgs({ sdpPath, outputPath, audioCount, videoCount, videoSou
 
   args.push(
     "-fps_mode", "cfr", "-r", String(RECORDING_FPS),
-    "-c:v", "libx264", "-preset", "superfast", "-tune", "zerolatency",
+    "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
     "-profile:v", "main", "-level", "4.1", "-pix_fmt", "yuv420p",
-    "-crf", "23", "-maxrate", "3500k", "-bufsize", "7000k", "-g", String(RECORDING_FPS * 2),
+    "-crf", "25", "-maxrate", "2500k", "-bufsize", "5000k", "-g", String(RECORDING_FPS * 2),
   );
 
   if (audioCount > 0) {
@@ -706,7 +739,7 @@ async function start_ffmpeg_recording_service({ db_query, mediaSoupService, room
       writeRecordingActivityOverlay(db_query, active).catch((error) => {
         console.warn(`[Recording ${recordingId}] Unable to refresh activity overlay:`, error.message);
       });
-    }, 1000);
+    }, 3000);
     await writeRecordingActivityOverlay(db_query, active);
 
     return {
