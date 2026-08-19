@@ -136,9 +136,9 @@ function StatCard({
   tone: string;
 }) {
   return (
-    <article className="enterprise-card overflow-hidden rounded-2xl">
+    <article className="enterprise-card min-w-0 overflow-hidden rounded-2xl">
       <div className="telefya-accent-line h-1" />
-      <div className="p-5">
+      <div className="p-4 sm:p-5">
         <div
           className={["grid h-12 w-12 place-items-center rounded-2xl", tone].join(
             " ",
@@ -147,7 +147,7 @@ function StatCard({
           <Icon size={22} />
         </div>
 
-        <p className="mt-6 text-3xl font-black text-navy-900">{value}</p>
+        <p className="mt-5 text-3xl font-black tracking-tight text-navy-900 sm:mt-6">{value}</p>
         <h3 className="mt-1 text-sm font-black text-navy-900">{title}</h3>
         <p className="mt-1 text-sm font-semibold text-navy-400">{caption}</p>
       </div>
@@ -290,30 +290,30 @@ export default function AnalyticsPage() {
   }
 
   return (
-    <div className="grid gap-6">
+    <div className="grid min-w-0 gap-5 sm:gap-6">
       <section className="telefya-surface overflow-hidden rounded-3xl border border-border shadow-enterprise">
         <div className="telefya-accent-line h-1.5" />
 
-        <div className="grid gap-6 p-6 xl:grid-cols-[1fr_auto] xl:items-center">
+        <div className="grid gap-5 p-4 sm:p-6 xl:grid-cols-[1fr_auto] xl:items-center">
           <div>
             <p className="text-xs font-black uppercase tracking-[0.18em] text-navy-300">
               Workspace Analytics
             </p>
 
-            <h1 className="mt-3 max-w-3xl text-4xl font-black leading-tight text-navy-900">
+            <h1 className="mt-3 max-w-3xl text-3xl font-black leading-tight tracking-tight text-navy-900 sm:text-4xl">
               Meeting performance, attendance, and recordings.
             </h1>
 
-            <p className="mt-3 max-w-2xl text-base font-semibold leading-7 text-navy-500">
+            <p className="mt-3 max-w-2xl text-sm font-semibold leading-6 text-navy-500 sm:text-base sm:leading-7">
               Track scheduled meetings, participant activity, saved recordings,
               and attendance history from one reporting view.
             </p>
           </div>
 
-          <div className="flex flex-wrap gap-3">
+          <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:gap-3">
             <button
               onClick={loadAnalytics}
-              className="inline-flex h-12 items-center gap-2 rounded-xl border border-border bg-white px-4 text-sm font-black text-navy-800 shadow-soft transition hover:border-telefya-blue hover:text-telefya-blue"
+              className="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-border bg-white px-3 text-sm font-black text-navy-800 shadow-soft transition hover:border-telefya-blue hover:text-telefya-blue sm:h-12 sm:px-4"
             >
               <RefreshCcw size={17} />
               Refresh
@@ -322,7 +322,7 @@ export default function AnalyticsPage() {
             <button
               onClick={() => downloadCsv(filteredReports)}
               disabled={filteredReports.length === 0}
-              className="inline-flex h-12 items-center gap-2 rounded-xl bg-telefya-blue px-4 text-sm font-black text-white shadow-soft transition hover:bg-telefya-violet disabled:cursor-not-allowed disabled:opacity-45"
+              className="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-telefya-blue px-3 text-sm font-black text-white shadow-soft transition hover:bg-telefya-violet disabled:cursor-not-allowed disabled:opacity-45 sm:h-12 sm:px-4"
             >
               <Download size={17} />
               Export CSV
@@ -332,13 +332,13 @@ export default function AnalyticsPage() {
       </section>
 
       {notice ? (
-        <div className="flex items-start gap-3 rounded-2xl border border-telefya-gold/30 bg-telefya-gold/10 px-4 py-3 text-sm font-bold text-navy-700">
+        <div className="flex items-start gap-3 rounded-2xl border border-telefya-gold/30 bg-telefya-gold/10 px-4 py-3 text-sm font-bold leading-6 text-navy-700">
           <AlertCircle size={18} className="mt-0.5 shrink-0 text-telefya-gold" />
           <span>{notice}</span>
         </div>
       ) : null}
 
-      <section className="grid gap-5 md:grid-cols-2 xl:grid-cols-4">
+      <section className="grid gap-3 sm:grid-cols-2 sm:gap-5 xl:grid-cols-4">
         <StatCard
           title="Total meetings"
           value={formatNumber(summary.total_meetings)}
@@ -372,8 +372,8 @@ export default function AnalyticsPage() {
         />
       </section>
 
-      <section className="enterprise-card rounded-3xl">
-        <div className="flex flex-col justify-between gap-4 border-b border-border p-5 md:flex-row md:items-center">
+      <section className="enterprise-card min-w-0 rounded-3xl">
+        <div className="flex flex-col justify-between gap-4 border-b border-border p-4 sm:p-5 md:flex-row md:items-center">
           <div>
             <h2 className="text-xl font-black text-navy-900">
               Meeting recordings
@@ -383,7 +383,7 @@ export default function AnalyticsPage() {
             </p>
           </div>
 
-          <div className="flex h-11 min-w-0 items-center gap-2 rounded-xl border border-border bg-navy-50 px-3 md:w-[340px]">
+          <div className="flex h-11 w-full min-w-0 items-center gap-2 rounded-xl border border-border bg-navy-50 px-3 md:w-[340px]">
             <Search size={17} className="shrink-0 text-navy-300" />
             <input
               value={query}
@@ -394,7 +394,7 @@ export default function AnalyticsPage() {
           </div>
         </div>
 
-        <div className="p-5">
+        <div className="p-4 sm:p-5">
           {loading ? (
             <div className="flex items-center gap-3 rounded-2xl bg-navy-50 px-4 py-5 text-sm font-black text-navy-600">
               <Loader2 size={18} className="animate-spin text-telefya-blue" />
@@ -435,11 +435,11 @@ export default function AnalyticsPage() {
                 return (
                   <article
                     key={recordingId}
-                    className="grid gap-4 rounded-2xl border border-border bg-white p-4 shadow-soft transition hover:border-telefya-blue/40 lg:grid-cols-[1fr_auto] lg:items-center"
+                    className="grid min-w-0 gap-4 rounded-2xl border border-border bg-white p-4 shadow-soft transition hover:border-telefya-blue/40 lg:grid-cols-[1fr_auto] lg:items-center"
                   >
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
-                        <h3 className="font-black text-navy-900">
+                        <h3 className="min-w-0 break-words font-black text-navy-900">
                           {recording.title ||
                             recording.file_name ||
                             "Telefya recording"}
@@ -459,11 +459,11 @@ export default function AnalyticsPage() {
                         </span>
                       </div>
 
-                      <p className="mt-2 break-all text-xs font-bold text-navy-400">
+                      <p className="mt-2 break-all text-xs font-bold leading-5 text-navy-400">
                         Room: {recording.room_id}
                       </p>
 
-                      <div className="mt-3 flex flex-wrap gap-2 text-xs font-black">
+                      <div className="mt-3 flex flex-wrap gap-2 text-[11px] font-black sm:text-xs">
                         <span className="inline-flex items-center gap-1 rounded-full bg-navy-50 px-3 py-1 text-navy-500">
                           <HardDrive size={13} />
                           {formatBytes(recording.size_bytes)}
@@ -487,11 +487,11 @@ export default function AnalyticsPage() {
                       </div>
                     </div>
 
-                    <div className="flex flex-wrap gap-2">
+                    <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
                       <button
                         onClick={() => downloadSavedRecording(recordingId)}
                         disabled={!ready || busy}
-                        className="inline-flex h-10 items-center gap-2 rounded-xl bg-telefya-blue px-4 text-sm font-black text-white hover:bg-telefya-violet disabled:cursor-not-allowed disabled:opacity-50"
+                        className="inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-telefya-blue px-3 text-sm font-black text-white hover:bg-telefya-violet disabled:cursor-not-allowed disabled:opacity-50 sm:px-4"
                       >
                         {busy ? (
                           <Loader2 size={16} className="animate-spin" />
@@ -504,7 +504,7 @@ export default function AnalyticsPage() {
                       <button
                         onClick={() => removeSavedRecording(recordingId)}
                         disabled={busy}
-                        className="inline-flex h-10 items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 text-sm font-black text-red-600 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
+                        className="inline-flex h-10 items-center justify-center gap-2 rounded-xl border border-red-200 bg-red-50 px-3 text-sm font-black text-red-600 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50 sm:px-4"
                       >
                         <Trash2 size={16} />
                         Delete
@@ -518,9 +518,9 @@ export default function AnalyticsPage() {
         </div>
       </section>
 
-      <section className="grid gap-6 xl:grid-cols-[1fr_360px]">
-        <article className="enterprise-card rounded-3xl">
-          <div className="flex flex-col justify-between gap-4 border-b border-border p-5 md:flex-row md:items-center">
+      <section className="grid min-w-0 gap-5 sm:gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <article className="enterprise-card min-w-0 rounded-3xl">
+          <div className="flex flex-col justify-between gap-4 border-b border-border p-4 sm:p-5 md:flex-row md:items-center">
             <div>
               <h2 className="text-xl font-black text-navy-900">
                 Attendance reports
@@ -531,7 +531,7 @@ export default function AnalyticsPage() {
             </div>
           </div>
 
-          <div className="p-5">
+          <div className="p-4 sm:p-5">
             {loading ? (
               <div className="flex items-center gap-3 rounded-2xl bg-navy-50 px-4 py-5 text-sm font-black text-navy-600">
                 <Loader2 size={18} className="animate-spin text-telefya-blue" />
@@ -554,8 +554,8 @@ export default function AnalyticsPage() {
                 </div>
               </div>
             ) : (
-              <div className="overflow-hidden rounded-2xl border border-border">
-                <table className="w-full min-w-[760px] border-collapse bg-white text-left">
+              <div className="-mx-4 overflow-x-auto rounded-none border-y border-border sm:mx-0 sm:rounded-2xl sm:border">
+                <table className="w-full min-w-[680px] border-collapse bg-white text-left text-sm">
                   <thead className="bg-navy-50 text-xs font-black uppercase tracking-[0.12em] text-navy-400">
                     <tr>
                       <th className="px-4 py-3">Meeting</th>
@@ -604,8 +604,8 @@ export default function AnalyticsPage() {
           </div>
         </article>
 
-        <aside className="grid gap-5">
-          <article className="enterprise-card rounded-3xl p-5">
+        <aside className="grid gap-4 sm:gap-5">
+          <article className="enterprise-card rounded-3xl p-4 sm:p-5">
             <div className="grid h-12 w-12 place-items-center rounded-2xl bg-telefya-purple/10 text-telefya-purple">
               <BarChart3 size={22} />
             </div>
@@ -628,7 +628,7 @@ export default function AnalyticsPage() {
             </div>
           </article>
 
-          <article className="enterprise-card rounded-3xl p-5">
+          <article className="enterprise-card rounded-3xl p-4 sm:p-5">
             <div className="flex items-center gap-3">
               <div className="grid h-11 w-11 place-items-center rounded-2xl bg-telefya-green/10 text-telefya-green">
                 <ShieldCheck size={21} />
@@ -643,33 +643,33 @@ export default function AnalyticsPage() {
             </div>
 
             <div className="mt-5 grid gap-3 text-sm font-semibold text-navy-600">
-              <div className="flex items-center justify-between rounded-xl bg-navy-50 px-4 py-3">
+              <div className="flex items-center justify-between gap-4 rounded-xl bg-navy-50 px-4 py-3">
                 <span>Meeting source</span>
                 <strong className="text-navy-900">Backend</strong>
               </div>
 
-              <div className="flex items-center justify-between rounded-xl bg-navy-50 px-4 py-3">
+              <div className="flex items-center justify-between gap-4 rounded-xl bg-navy-50 px-4 py-3">
                 <span>Attendance</span>
                 <strong className="text-navy-900">
                   {reports.length ? "Live" : "Waiting"}
                 </strong>
               </div>
 
-              <div className="flex items-center justify-between rounded-xl bg-navy-50 px-4 py-3">
+              <div className="flex items-center justify-between gap-4 rounded-xl bg-navy-50 px-4 py-3">
                 <span>Recordings</span>
                 <strong className="text-navy-900">
                   {recordings.length ? "Live" : "Waiting"}
                 </strong>
               </div>
 
-              <div className="flex items-center justify-between rounded-xl bg-navy-50 px-4 py-3">
+              <div className="flex items-center justify-between gap-4 rounded-xl bg-navy-50 px-4 py-3">
                 <span>Exports</span>
                 <strong className="text-navy-900">CSV / Video</strong>
               </div>
             </div>
           </article>
 
-          <article className="rounded-3xl bg-navy-900 p-5 text-white shadow-enterprise">
+          <article className="rounded-3xl bg-navy-900 p-4 text-white shadow-enterprise sm:p-5">
             <FileText size={22} className="text-telefya-gold" />
 
             <h2 className="mt-5 text-xl font-black">Retention policy</h2>
