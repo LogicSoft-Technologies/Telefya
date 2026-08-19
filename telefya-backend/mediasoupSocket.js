@@ -14,17 +14,21 @@ const {
   savePeerRtpCapabilities,
   resumeConsumer,
   stopConsumerScreenSharing,
+  mediaSoupService,
   rooms,
 } = require("./mediasoupServer2");
 
 const { breakoutManager } = require("./breakoutRoomManager");
 const {
-  start_browser_recording_service,
-  stop_browser_recording_service,
-  get_active_browser_recording,
-} = require("./services/13-browser_recording_service");
+  start_ffmpeg_recording_service,
+  stop_ffmpeg_recording_service,
+  getActiveRecording,
+} = require("./services/11-ffmpeg_recording_service");
 
 const { query } = require("./config/db");
+const {
+  record_meeting_recording_event_service,
+} = require("./services/15-recording-event_service");
 const {
   start_attendance_service,
   finish_attendance_service,
@@ -39,6 +43,26 @@ module.exports = async function mediasoupSocket(io, pubClient, subClient) {
   setIo(io);
   await setupMediasoup(pubClient, subClient);
   setPubSub(pubClient, subClient);
+
+  function recordRecordingEvent({
+    roomId,
+    eventType,
+    actorUserId = null,
+    actorName = null,
+    message = null,
+    metadata = {},
+  }) {
+    void record_meeting_recording_event_service(query, {
+      roomId,
+      eventType,
+      actorUserId,
+      actorName,
+      message,
+      metadata,
+    }).catch((error) => {
+      console.warn("[recording-event] Unable to save event:", error.message);
+    });
+  }
 
   // Key: `${roomId}:${userId}`
   // A guest stays here until the scheduled meeting host admits or declines them.
@@ -511,7 +535,18 @@ module.exports = async function mediasoupSocket(io, pubClient, subClient) {
     return { allowed: true };
   }
 
-  async function canStartRecordingByUsage(policy) {
+  async function canStartRecordingByUsage(
+    policy,
+    { unlimitedHostAccess = false } = {},
+  ) {
+    if (unlimitedHostAccess) {
+      return {
+        allowed: true,
+        bypassed: true,
+        entitlement: null,
+      };
+    }
+
     const hostUserId = policy?.hostUserId;
 
     if (!hostUserId) {
@@ -593,10 +628,10 @@ module.exports = async function mediasoupSocket(io, pubClient, subClient) {
   }
 
   async function stopActiveRecordingForRoom(roomId) {
-    if (!roomId || !get_active_browser_recording(roomId)) return;
+    if (!roomId || !getActiveRecording(roomId)) return;
 
     try {
-      const result = await stop_browser_recording_service({
+      const result = await stop_ffmpeg_recording_service({
         db_query: query,
         roomId,
       });
@@ -1098,6 +1133,23 @@ module.exports = async function mediasoupSocket(io, pubClient, subClient) {
           request.respondedAt = new Date().toISOString();
           request.respondedBy = hostUserId;
 
+          recordRecordingEvent({
+            roomId: request.roomId,
+            eventType: approved
+              ? "participant_admitted"
+              : "participant_declined",
+            actorUserId: hostUserId,
+            actorName: socket.data?.userName || "Host",
+            message: approved
+              ? `${request.userName} was admitted to the meeting.`
+              : `${request.userName} was declined from the meeting.`,
+            metadata: {
+              requested_user_id: request.userId,
+              requested_user_name: request.userName,
+              request_id: request.requestId,
+            },
+          });
+
           // `io` is the /conf_meeting namespace.
           const guestSocket = io.sockets?.get(request.socketId);
 
@@ -1146,6 +1198,60 @@ module.exports = async function mediasoupSocket(io, pubClient, subClient) {
         }
       },
     );
+
+    socket.on("waiting-room:admit-all", async ({ roomId }, callback) => {
+      try {
+        const normalizedRoomId = normalizeId(roomId);
+        const hostUserId = getAuthenticatedSocketUserId(socket);
+
+        if (
+          !socket.data?.isHost ||
+          normalizeId(socket.data.userId) !== hostUserId
+        ) {
+          return callback?.({ success: false, code: "HOST_ONLY", message: "Only the meeting host can approve participants." });
+        }
+
+        const scheduledHostUserId = await getScheduledMeetingHostUserId(normalizedRoomId);
+        if (!scheduledHostUserId || hostUserId !== scheduledHostUserId) {
+          return callback?.({ success: false, code: "HOST_VERIFICATION_FAILED", message: "Host verification failed for this meeting." });
+        }
+
+        const pendingRequests = Array.from(pendingJoinRequests.values())
+          .filter((request) => request.roomId === normalizedRoomId && request.status === "pending")
+          .sort((first, second) => new Date(first.requestedAt).getTime() - new Date(second.requestedAt).getTime());
+
+        if (!pendingRequests.length) {
+          return callback?.({ success: false, code: "NO_PENDING_REQUESTS", message: "There are no pending join requests." });
+        }
+
+        const policy = await resolveRoomBillingPolicy({ roomId: normalizedRoomId, userId: hostUserId, userName: socket.data?.userName || "Host", isHost: true });
+        const override = await getHostParticipantLimitOverride(hostUserId);
+        const participantLimit = override === 0 ? Number.POSITIVE_INFINITY : override ?? normalizeLimitNumber(policy?.limits?.max_participants, DEFAULT_FREE_LIMITS.max_participants);
+        const availableSlots = Number.isFinite(participantLimit) ? Math.max(0, participantLimit - getBillableParticipantCount(normalizedRoomId)) : pendingRequests.length;
+        const approvedRequests = pendingRequests.slice(0, availableSlots);
+
+        if (!approvedRequests.length) {
+          return callback?.({ success: false, code: "PLAN_PARTICIPANT_LIMIT", message: "The meeting has reached its participant limit." });
+        }
+
+        const approvedRequestIds = [];
+        for (const request of approvedRequests) {
+          request.status = "approved";
+          request.respondedAt = new Date().toISOString();
+          request.respondedBy = hostUserId;
+          approvedRequestIds.push(request.requestId);
+          const guestSocket = io.sockets?.get(request.socketId);
+          if (guestSocket?.connected) guestSocket.emit("waiting-room:decision", { requestId: request.requestId, roomId: request.roomId, status: "approved", message: "The host admitted you. Joining meeting..." });
+        }
+
+        emitPendingRequestsToHost(normalizedRoomId);
+        const remainingCount = pendingRequests.length - approvedRequests.length;
+        return callback?.({ success: true, approvedRequestIds, approvedCount: approvedRequests.length, remainingCount, message: remainingCount > 0 ? `${approvedRequests.length} participant(s) admitted. ${remainingCount} remain waiting because the meeting is at capacity.` : `${approvedRequests.length} participant(s) admitted.` });
+      } catch (error) {
+        console.error("[waiting-room] admit-all failed", { roomId, hostUserId: socket.data?.userId, message: error?.message });
+        return callback?.({ success: false, code: "WAITING_ROOM_ADMIT_ALL_FAILED", message: error?.message || "Unable to admit all participants." });
+      }
+    });
 
     socket.on(
       "join",
@@ -1341,6 +1447,19 @@ module.exports = async function mediasoupSocket(io, pubClient, subClient) {
                 mic_on: Boolean(micOn),
                 camera_on: Boolean(cameraOn),
                 is_host: Boolean(joinResult.isHost),
+              },
+            });
+
+            recordRecordingEvent({
+              roomId,
+              eventType: "participant_joined",
+              actorUserId: userId,
+              actorName: userName,
+              message: `${userName} joined the meeting.`,
+              metadata: {
+                is_host: Boolean(joinResult.isHost),
+                mic_on: Boolean(micOn),
+                camera_on: Boolean(cameraOn),
               },
             });
           }
@@ -1563,6 +1682,16 @@ module.exports = async function mediasoupSocket(io, pubClient, subClient) {
             rtpParameters,
             producerAppData,
           );
+
+          if (kind === "video" && producerAppData.isScreen) {
+            recordRecordingEvent({
+              roomId,
+              eventType: "screen_share_started",
+              actorUserId: userId,
+              actorName: userName,
+              message: `${userName} started sharing their screen.`,
+            });
+          }
 
           const room = rooms.get(roomId);
 
@@ -1899,6 +2028,16 @@ module.exports = async function mediasoupSocket(io, pubClient, subClient) {
       try {
         await stopScreenShare(roomId, userId, screenProducerIds);
 
+        recordRecordingEvent({
+          roomId,
+          eventType: "screen_share_stopped",
+          actorUserId: userId,
+          actorName: socket.data?.userName || "Participant",
+          message: `${
+            socket.data?.userName || "A participant"
+          } stopped sharing their screen.`,
+        });
+
         io.to(roomId).emit("screen-share-stopped", {
           userId,
           message: `User ${userId} has stopped screen sharing`,
@@ -1931,8 +2070,8 @@ module.exports = async function mediasoupSocket(io, pubClient, subClient) {
           message: `User ${userId} has left the room`,
         });
 
-        if (socket.data?.isHost && get_active_browser_recording(roomId)) {
-          const result = await stop_browser_recording_service({
+        if (socket.data?.isHost && getActiveRecording(roomId)) {
+          const result = await stop_ffmpeg_recording_service({
             db_query: query,
             roomId,
           });
@@ -1946,6 +2085,19 @@ module.exports = async function mediasoupSocket(io, pubClient, subClient) {
         }
 
         removeRoomParticipant(roomId, userId);
+
+        recordRecordingEvent({
+          roomId,
+          eventType: "participant_left",
+          actorUserId: userId,
+          actorName: socket.data?.userName || "Participant",
+          message: `${
+            socket.data?.userName || "A participant"
+          } left the meeting.`,
+          metadata: {
+            reason: "left",
+          },
+        });
 
         void recordMeetingSessionEvent(socket, "left", {
           metadata: {
@@ -2004,8 +2156,8 @@ module.exports = async function mediasoupSocket(io, pubClient, subClient) {
             message: `User ${userId} has disconnected`,
           });
 
-          if (socket.data?.isHost && get_active_browser_recording(roomId)) {
-            const result = await stop_browser_recording_service({
+          if (socket.data?.isHost && getActiveRecording(roomId)) {
+            const result = await stop_ffmpeg_recording_service({
               db_query: query,
               roomId,
             });
@@ -2019,6 +2171,19 @@ module.exports = async function mediasoupSocket(io, pubClient, subClient) {
           }
 
           removeRoomParticipant(roomId, userId);
+
+          recordRecordingEvent({
+            roomId,
+            eventType: "participant_left",
+            actorUserId: userId,
+            actorName: socket.data?.userName || "Participant",
+            message: `${
+              socket.data?.userName || "A participant"
+            } disconnected.`,
+            metadata: {
+              reason: "disconnected",
+            },
+          });
 
           void recordMeetingSessionEvent(socket, "left", {
             metadata: {
@@ -2054,13 +2219,27 @@ module.exports = async function mediasoupSocket(io, pubClient, subClient) {
     socket.on(
       "send-message",
       ({ roomId, message, time, userName, socketId, messageId }) => {
-        io.to(roomId).emit("response-send-message", {
-          roomId,
+        const safeRoomId = roomId || socket.data?.roomId;
+
+        io.to(safeRoomId).emit("response-send-message", {
+          roomId: safeRoomId,
           message,
           time,
           userName,
           socketId,
           messageId,
+        });
+
+        recordRecordingEvent({
+          roomId: safeRoomId,
+          eventType: "chat_message",
+          actorUserId: socket.data?.userId || null,
+          actorName: userName || socket.data?.userName || "Participant",
+          message,
+          metadata: {
+            message_id: messageId || null,
+            sent_at: time || null,
+          },
         });
       },
     );
@@ -2416,6 +2595,13 @@ module.exports = async function mediasoupSocket(io, pubClient, subClient) {
           });
         }
 
+        if (!isHost) {
+          return callback?.({
+            success: false,
+            error: "Only the meeting host can start recording.",
+          });
+        }
+
         const recordingBillingPolicy = await resolveRoomBillingPolicy({
           roomId: safeRoomId,
           userId,
@@ -2423,7 +2609,12 @@ module.exports = async function mediasoupSocket(io, pubClient, subClient) {
           isHost: true,
         });
 
-        if (!recordingBillingPolicy.limits?.recording_enabled) {
+        const hostOverride = await getHostParticipantLimitOverride(
+          recordingBillingPolicy.hostUserId || userId,
+        );
+        const hasUnlimitedHostAccess = hostOverride === 0;
+
+        if (!hasUnlimitedHostAccess && !recordingBillingPolicy.limits?.recording_enabled) {
           const denial = buildBillingDenial({
             code: "PLAN_RECORDING_DISABLED",
             message:
@@ -2439,6 +2630,7 @@ module.exports = async function mediasoupSocket(io, pubClient, subClient) {
 
         const recordingUsageAccess = await canStartRecordingByUsage(
           recordingBillingPolicy,
+          { unlimitedHostAccess: hasUnlimitedHostAccess },
         );
 
         if (!recordingUsageAccess.allowed) {
@@ -2462,13 +2654,6 @@ module.exports = async function mediasoupSocket(io, pubClient, subClient) {
           });
         }
 
-        if (!isHost) {
-          return callback?.({
-            success: false,
-            error: "Only the meeting host can start recording.",
-          });
-        }
-
         if (!rooms.has(safeRoomId)) {
           return callback?.({
             success: false,
@@ -2485,7 +2670,7 @@ module.exports = async function mediasoupSocket(io, pubClient, subClient) {
           });
         }
 
-        const activeRecording = get_active_browser_recording(safeRoomId);
+        const activeRecording = getActiveRecording(safeRoomId);
 
         if (activeRecording) {
           io.to(safeRoomId).emit("recording-started", {
@@ -2510,11 +2695,15 @@ module.exports = async function mediasoupSocket(io, pubClient, subClient) {
           });
         }
 
-        const result = await start_browser_recording_service({
+        const result = await start_ffmpeg_recording_service({
           db_query: query,
+          mediaSoupService,
           roomId: safeRoomId,
           hostUserId: socket.data?.userId || socket.userId,
-          hostUserName: socket.data?.userName || socket.user?.name || "Host",
+          recordingLayout:
+            socket.data?.clientInfo?.deviceType === "mobile"
+              ? "mobile"
+              : "desktop",
         });
 
         if (!result.success) {
@@ -2528,6 +2717,18 @@ module.exports = async function mediasoupSocket(io, pubClient, subClient) {
           ...result.data,
           roomId: safeRoomId,
           startedAt: result.data?.startedAt || new Date().toISOString(),
+        });
+
+        recordRecordingEvent({
+          roomId: safeRoomId,
+          eventType: "recording_started",
+          actorUserId: userId,
+          actorName: userName,
+          message: "Meeting recording started.",
+          metadata: {
+            recording_id: result.data?.recordingId || null,
+            layout: result.data?.layout || "desktop",
+          },
         });
 
         return callback?.({
@@ -2584,7 +2785,15 @@ module.exports = async function mediasoupSocket(io, pubClient, subClient) {
           });
         }
 
-        const result = await stop_browser_recording_service({
+        recordRecordingEvent({
+          roomId: safeRoomId,
+          eventType: "recording_stopped",
+          actorUserId: socket.data?.userId || null,
+          actorName: socket.data?.userName || "Host",
+          message: "Meeting recording stopped.",
+        });
+
+        const result = await stop_ffmpeg_recording_service({
           db_query: query,
           roomId: safeRoomId,
         });

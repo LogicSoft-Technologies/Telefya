@@ -340,6 +340,18 @@ function getRoomIdFromMeetingUrl(value?: string) {
   }
 }
 
+const MEETING_REJOIN_STORAGE_PREFIX = "telefya:meeting-rejoin:";
+
+type SavedMeetingSession = {
+  userId: string;
+  role: "host" | "participant";
+  savedAt: number;
+};
+
+function getMeetingRejoinKey(roomId: string) {
+  return `${MEETING_REJOIN_STORAGE_PREFIX}${roomId}`;
+}
+
 export default function LiveRoomPage() {
   const params = useParams<{ roomId: string }>();
   const roomId = decodeURIComponent(params.roomId);
@@ -358,6 +370,10 @@ export default function LiveRoomPage() {
   const [admissionActionId, setAdmissionActionId] = useState<string | null>(
     null,
   );
+  const [admittingAll, setAdmittingAll] = useState(false);
+  const [hostAdmissionNotice, setHostAdmissionNotice] = useState("");
+  const previousAdmissionCountRef = useRef(0);
+  const admissionNoticeTimerRef = useRef<number | null>(null);
 
   const [admissionError, setAdmissionError] = useState("");
   const [localRecordingNotice, setLocalRecordingNotice] = useState("");
@@ -454,6 +470,30 @@ export default function LiveRoomPage() {
 
   const userId = user?.user_id || user?.id || user?.email || "guest-user";
 
+  const autoRejoinAttemptedRef = useRef(false);
+
+  const saveMeetingSession = useCallback(
+    (role: "host" | "participant") => {
+      if (!userId || userId === "guest-user") return;
+
+      const session: SavedMeetingSession = {
+        userId: String(userId),
+        role,
+        savedAt: Date.now(),
+      };
+
+      window.sessionStorage.setItem(
+        getMeetingRejoinKey(roomId),
+        JSON.stringify(session),
+      );
+    },
+    [roomId, userId],
+  );
+
+  const clearMeetingSession = useCallback(() => {
+    window.sessionStorage.removeItem(getMeetingRejoinKey(roomId));
+  }, [roomId]);
+
   const room = useMediasoupRoom({
     enabled: started,
     roomId,
@@ -471,13 +511,110 @@ export default function LiveRoomPage() {
 
   const requestDeclined = room.waitingRoomStatus === "declined";
 
+  useEffect(() => {
+    if (
+      checkingHostAccess ||
+      started ||
+      autoRejoinAttemptedRef.current ||
+      !userId ||
+      userId === "guest-user"
+    ) {
+      return;
+    }
+
+    autoRejoinAttemptedRef.current = true;
+
+    try {
+      const raw = window.sessionStorage.getItem(getMeetingRejoinKey(roomId));
+
+      if (!raw) return;
+
+      const saved = JSON.parse(raw) as SavedMeetingSession;
+      const expired =
+        Date.now() - Number(saved.savedAt || 0) > 12 * 60 * 60 * 1000;
+
+      if (
+        expired ||
+        String(saved.userId) !== String(userId) ||
+        !["host", "participant"].includes(saved.role)
+      ) {
+        clearMeetingSession();
+        return;
+      }
+
+      if (saved.role === "host" && !canStartAsHost) {
+        clearMeetingSession();
+        return;
+      }
+
+      setIsHost(saved.role === "host");
+      setStarted(true);
+      setExpanded(true);
+      setChatOpen(true);
+    } catch {
+      clearMeetingSession();
+    }
+  }, [
+    canStartAsHost,
+    checkingHostAccess,
+    clearMeetingSession,
+    roomId,
+    started,
+    userId,
+  ]);
+
+  useEffect(() => {
+    if (requestDeclined) {
+      clearMeetingSession();
+    }
+  }, [clearMeetingSession, requestDeclined]);
+
   const admissionRequests = room.waitingRoomRequests as WaitingRoomRequest[];
+
+  useEffect(() => {
+    if (!isCurrentUserHost) {
+      previousAdmissionCountRef.current = 0;
+      return;
+    }
+
+    const previousCount = previousAdmissionCountRef.current;
+    const currentCount = admissionRequests.length;
+
+    if (currentCount > previousCount) {
+      const newRequests = currentCount - previousCount;
+      const newestRequest = admissionRequests[admissionRequests.length - 1];
+
+      setHostAdmissionNotice(
+        newRequests === 1
+          ? `${newestRequest?.userName || "A participant"} is waiting to join.`
+          : `${newRequests} participants are waiting to join.`,
+      );
+
+      if (admissionNoticeTimerRef.current) {
+        window.clearTimeout(admissionNoticeTimerRef.current);
+      }
+
+      admissionNoticeTimerRef.current = window.setTimeout(() => {
+        setHostAdmissionNotice("");
+      }, 7000);
+    }
+
+    previousAdmissionCountRef.current = currentCount;
+  }, [admissionRequests.length, isCurrentUserHost]);
+
+  useEffect(() => {
+    return () => {
+      if (admissionNoticeTimerRef.current) {
+        window.clearTimeout(admissionNoticeTimerRef.current);
+      }
+    };
+  }, []);
 
   async function respondToAdmission(
     requestId: string,
     decision: "approve" | "decline",
   ) {
-    if (admissionActionId) return;
+    if (admissionActionId || admittingAll) return;
 
     setAdmissionActionId(requestId);
     setAdmissionError("");
@@ -492,6 +629,39 @@ export default function LiveRoomPage() {
       );
     } finally {
       setAdmissionActionId(null);
+    }
+  }
+
+  async function admitAllWaitingParticipants() {
+    if (
+      admittingAll ||
+      admissionActionId ||
+      admissionRequests.length === 0
+    ) {
+      return;
+    }
+
+    setAdmittingAll(true);
+    setAdmissionError("");
+
+    try {
+      const result = await room.admitAllWaitingRoomRequests();
+
+      setHostAdmissionNotice(
+        result.remainingCount > 0
+          ? result.message
+          : `${result.approvedCount} participant${
+              result.approvedCount === 1 ? "" : "s"
+            } admitted.`,
+      );
+    } catch (error) {
+      setAdmissionError(
+        error instanceof Error
+          ? error.message
+          : "Unable to admit waiting participants.",
+      );
+    } finally {
+      setAdmittingAll(false);
     }
   }
 
@@ -818,6 +988,7 @@ export default function LiveRoomPage() {
   }
 
   function startAsHost() {
+    saveMeetingSession("host");
     setBillingNotice(null);
     setIsHost(true);
     setStarted(true);
@@ -826,6 +997,7 @@ export default function LiveRoomPage() {
   }
 
   function joinAsParticipant() {
+    saveMeetingSession("participant");
     setBillingNotice(null);
     setIsHost(false);
     setStarted(true);
@@ -913,6 +1085,7 @@ export default function LiveRoomPage() {
   }
 
   function leaveRoom() {
+    clearMeetingSession();
     room.leave();
     window.location.href = "/lobby";
   }
@@ -1357,6 +1530,8 @@ export default function LiveRoomPage() {
                       pendingId={admissionActionId}
                       error={admissionError}
                       onRespond={respondToAdmission}
+                      admittingAll={admittingAll}
+                      onAdmitAll={admitAllWaitingParticipants}
                     />
                   ) : null}
 
@@ -1639,6 +1814,8 @@ export default function LiveRoomPage() {
               pendingId={admissionActionId}
               error={admissionError}
               onRespond={respondToAdmission}
+              admittingAll={admittingAll}
+              onAdmitAll={admitAllWaitingParticipants}
             />
           ) : null}
 
@@ -1670,6 +1847,29 @@ export default function LiveRoomPage() {
 
         {localRecordingNotice ? (
           <Toast type="warning">{localRecordingNotice}</Toast>
+        ) : null}
+
+        {isCurrentUserHost && hostAdmissionNotice ? (
+          <Toast type="warning">
+            <div className="flex items-center gap-3">
+              <div className="min-w-0 flex-1">
+                <p className="font-black">Join request</p>
+                <p className="mt-0.5">{hostAdmissionNotice}</p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setParticipantsOpen(true);
+                  setControlsVisible(true);
+                  setHostAdmissionNotice("");
+                }}
+                className="shrink-0 rounded-md bg-amber-400 px-2.5 py-1.5 text-[11px] font-black text-navy-950 transition hover:bg-amber-300"
+              >
+                Review
+              </button>
+            </div>
+          </Toast>
         ) : null}
       </section>
     </main>
@@ -2129,6 +2329,8 @@ function AdmissionRequests({
   pendingId,
   error,
   onRespond,
+  admittingAll,
+  onAdmitAll,
 }: {
   requests: WaitingRoomRequest[];
   pendingId: string | null;
@@ -2137,15 +2339,22 @@ function AdmissionRequests({
     requestId: string,
     decision: "approve" | "decline",
   ) => Promise<void>;
+  admittingAll: boolean;
+  onAdmitAll: () => Promise<void>;
 }) {
+  const busy = Boolean(pendingId) || admittingAll;
+
   return (
     <div className="mb-2 rounded-xl border border-blue-100 bg-blue-50 p-2">
       <div className="flex items-center justify-between gap-2 px-1 py-1">
-        <p className="text-[11px] font-black uppercase tracking-[0.12em] text-telefya-blue">
-          Waiting to join ({requests.length})
-        </p>
-
-        <span className="h-2 w-2 animate-pulse rounded-full bg-telefya-blue" />
+        <div>
+          <p className="text-[11px] font-black uppercase tracking-[0.12em] text-telefya-blue">Waiting to join ({requests.length})</p>
+          <p className="mt-0.5 text-[10px] font-bold text-navy-400">Review individually or admit everyone at once.</p>
+        </div>
+        <button type="button" disabled={busy} onClick={() => void onAdmitAll()} className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-telefya-blue px-2.5 text-[10px] font-black text-white transition hover:bg-telefya-violet disabled:cursor-not-allowed disabled:opacity-50">
+          {admittingAll ? <Loader2 size={13} className="animate-spin" /> : <UserCheck size={13} />}
+          Admit all
+        </button>
       </div>
 
       <div className="mt-1 grid gap-1">
@@ -2167,7 +2376,7 @@ function AdmissionRequests({
 
               <button
                 type="button"
-                disabled={Boolean(pendingId)}
+                disabled={busy}
                 onClick={() => void onRespond(request.requestId, "approve")}
                 title={`Admit ${request.userName}`}
                 className="grid h-8 w-8 place-items-center rounded-lg bg-telefya-green text-white transition hover:brightness-95 disabled:opacity-50"
@@ -2181,7 +2390,7 @@ function AdmissionRequests({
 
               <button
                 type="button"
-                disabled={Boolean(pendingId)}
+                disabled={busy}
                 onClick={() => void onRespond(request.requestId, "decline")}
                 title={`Decline ${request.userName}`}
                 className="grid h-8 w-8 place-items-center rounded-lg bg-red-500 text-white transition hover:bg-red-600 disabled:opacity-50"

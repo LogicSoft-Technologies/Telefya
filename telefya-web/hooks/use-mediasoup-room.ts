@@ -1950,6 +1950,51 @@ export function useMediasoupRoom(params: {
     [roomId],
   );
 
+  const admitAllWaitingRoomRequests = useCallback(async () => {
+    const socket = socketRef.current;
+
+    if (!socket?.connected) {
+      throw new Error("Meeting socket is not connected.");
+    }
+
+    const response = await new Promise<{
+      success?: boolean;
+      code?: string;
+      message?: string;
+      approvedRequestIds?: string[];
+      approvedCount?: number;
+      remainingCount?: number;
+    }>((resolve) => {
+      socket.emit(
+        "waiting-room:admit-all",
+        {
+          roomId,
+        },
+        resolve,
+      );
+    });
+
+    if (!response?.success) {
+      throw new Error(
+        response?.message || "Unable to admit waiting participants.",
+      );
+    }
+
+    const approvedIds = new Set(response.approvedRequestIds || []);
+
+    if (approvedIds.size > 0) {
+      setWaitingRoomRequests((current) =>
+        current.filter((request) => !approvedIds.has(request.requestId)),
+      );
+    }
+
+    return {
+      approvedCount: response.approvedCount || approvedIds.size,
+      remainingCount: response.remainingCount || 0,
+      message: response.message || "Waiting participants admitted.",
+    };
+  }, [roomId]);
+
   return {
     status,
     error,
@@ -1982,6 +2027,7 @@ export function useMediasoupRoom(params: {
     waitingRoomMessage,
     waitingRoomRequests,
     respondToWaitingRoomRequest,
+    admitAllWaitingRoomRequests,
     joinAndSetupRoom,
     raisedHands,
     toggleHand,

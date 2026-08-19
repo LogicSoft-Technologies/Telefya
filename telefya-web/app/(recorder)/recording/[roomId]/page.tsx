@@ -1,7 +1,7 @@
 "use client";
 
-import { useParams, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useParams, useSearchParams } from "next/navigation";
 import { useMediasoupRoom } from "@/hooks/use-mediasoup-room";
 
 declare global {
@@ -13,15 +13,22 @@ declare global {
   }
 }
 
-type RecorderStream = {
-  id: string;
-  kind: "audio" | "video";
-  stream: MediaStream;
+type ParticipantMeta = {
   userId?: string;
+  id?: string;
   userName?: string;
-  isScreen?: boolean;
+  name?: string;
   micOn?: boolean;
   cameraOn?: boolean;
+};
+
+type RecorderStream = {
+  id: string;
+  userId?: string;
+  userName?: string;
+  kind: "audio" | "video";
+  isScreen?: boolean;
+  stream: MediaStream;
 };
 
 type VideoEntry = {
@@ -34,20 +41,17 @@ type VideoEntry = {
   video?: HTMLVideoElement;
 };
 
-type ParticipantMeta = {
-  userId?: string;
-  id?: string;
-  userName?: string;
-  name?: string;
-  micOn?: boolean;
-  cameraOn?: boolean;
-};
+type RecorderLayout = "desktop" | "mobile";
 
-const LOGICAL_WIDTH = 1280;
-const LOGICAL_HEIGHT = 720;
-const RENDER_WIDTH = 1920;
-const RENDER_HEIGHT = 1080;
-const RENDER_SCALE = RENDER_WIDTH / LOGICAL_WIDTH;
+function normalizeParticipants(value: unknown): ParticipantMeta[] {
+  if (Array.isArray(value)) return value as ParticipantMeta[];
+
+  if (value && typeof value === "object") {
+    return Object.values(value as Record<string, ParticipantMeta>);
+  }
+
+  return [];
+}
 
 function roundRect(
   ctx: CanvasRenderingContext2D,
@@ -55,61 +59,50 @@ function roundRect(
   y: number,
   width: number,
   height: number,
-  radius: number,
+  radius = 12,
 ) {
-  const r = Math.min(radius, width / 2, height / 2);
+  const safeRadius = Math.min(radius, width / 2, height / 2);
+
   ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.arcTo(x + width, y, x + width, y + height, r);
-  ctx.arcTo(x + width, y + height, x, y + height, r);
-  ctx.arcTo(x, y + height, x, y, r);
-  ctx.arcTo(x, y, x + width, y, r);
+  ctx.moveTo(x + safeRadius, y);
+  ctx.arcTo(x + width, y, x + width, y + height, safeRadius);
+  ctx.arcTo(x + width, y + height, x, y + height, safeRadius);
+  ctx.arcTo(x, y + height, x, y, safeRadius);
+  ctx.arcTo(x, y, x + width, y, safeRadius);
   ctx.closePath();
 }
 
-function getInitials(name: string) {
-  return name
-    .split(" ")
-    .filter(Boolean)
-    .map((part) => part[0])
-    .join("")
-    .slice(0, 2)
-    .toUpperCase();
-}
-
-function normalizeParticipants(value: unknown): ParticipantMeta[] {
-  if (!value) return [];
-  if (Array.isArray(value)) return value as ParticipantMeta[];
-  if (typeof value === "object") {
-    return Object.values(value as Record<string, ParticipantMeta>);
-  }
-  return [];
-}
-
-function truncateToWidth(
+function truncateText(
   ctx: CanvasRenderingContext2D,
-  text: string,
+  value: string,
   maxWidth: number,
 ) {
-  if (ctx.measureText(text).width <= maxWidth) return text;
+  if (ctx.measureText(value).width <= maxWidth) return value;
 
-  let low = 0;
-  let high = text.length;
+  let output = "";
 
-  while (low < high) {
-    const mid = Math.ceil((low + high) / 2);
-    const candidate = `${text.slice(0, mid)}…`;
+  for (const character of value) {
+    const candidate = `${output}${character}...`;
 
-    if (ctx.measureText(candidate).width <= maxWidth) {
-      low = mid;
-    } else {
-      high = mid - 1;
-    }
+    if (ctx.measureText(candidate).width > maxWidth) break;
+
+    output += character;
   }
 
-  return low > 0 ? `${text.slice(0, low)}…` : "…";
+  return output ? `${output}...` : "...";
 }
 
+function initials(name: string) {
+  return (
+    name
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((part) => part.charAt(0))
+      .join("")
+      .toUpperCase() || "T"
+  );
+}
 
 function drawCover(
   ctx: CanvasRenderingContext2D,
@@ -140,423 +133,421 @@ function drawCover(
   ctx.drawImage(video, sx, sy, sw, sh, x, y, width, height);
 }
 
-function drawContain(
-  ctx: CanvasRenderingContext2D,
-  video: HTMLVideoElement,
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-) {
-  const sourceWidth = video.videoWidth || 16;
-  const sourceHeight = video.videoHeight || 9;
-  const scale = Math.min(width / sourceWidth, height / sourceHeight);
-
-  const drawWidth = sourceWidth * scale;
-  const drawHeight = sourceHeight * scale;
-  const dx = x + (width - drawWidth) / 2;
-  const dy = y + (height - drawHeight) / 2;
-
-  ctx.drawImage(video, dx, dy, drawWidth, drawHeight);
-}
-
-function drawAvatarFallback(
+function drawAvatar(
   ctx: CanvasRenderingContext2D,
   name: string,
-  caption: string,
   x: number,
   y: number,
   width: number,
   height: number,
 ) {
-  ctx.fillStyle = "#071832";
-  ctx.fillRect(x, y, width, height);
-
-  const avatarSize = Math.min(width, height) * 0.22;
-  const cx = x + width / 2;
-  const cy = y + height / 2 - 18;
-
-  const gradient = ctx.createLinearGradient(
-    cx - avatarSize,
-    cy - avatarSize,
-    cx + avatarSize,
-    cy + avatarSize,
-  );
-  gradient.addColorStop(0, "#0f6bff");
-  gradient.addColorStop(0.55, "#6426ff");
-  gradient.addColorStop(1, "#10d98f");
+  const gradient = ctx.createLinearGradient(x, y, x + width, y + height);
+  gradient.addColorStop(0, "#10295d");
+  gradient.addColorStop(1, "#25125c");
 
   ctx.fillStyle = gradient;
+  ctx.fillRect(x, y, width, height);
+
+  const size = Math.max(30, Math.min(width, height) * 0.24);
+
   ctx.beginPath();
-  ctx.arc(cx, cy, avatarSize, 0, Math.PI * 2);
+  ctx.arc(x + width / 2, y + height / 2 - 8, size, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(255,255,255,0.15)";
   ctx.fill();
 
   ctx.fillStyle = "#ffffff";
-  ctx.font = `800 ${Math.max(22, avatarSize * 0.72)}px Arial`;
+  ctx.font = `800 ${Math.max(15, size * 0.75)}px Arial`;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillText(getInitials(name), cx, cy);
-
-  ctx.font = "800 20px Arial";
-  ctx.fillText(truncateToWidth(ctx, name, width - 48), cx, cy + avatarSize + 34);
-
-  ctx.font = "700 13px Arial";
-  ctx.fillStyle = "rgba(255,255,255,0.48)";
-  ctx.fillText(caption, cx, cy + avatarSize + 58);
-
-  ctx.textAlign = "start";
-  ctx.textBaseline = "alphabetic";
-}
-
-function drawScreenTile(
-  ctx: CanvasRenderingContext2D,
-  tile: VideoEntry,
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-) {
-  ctx.save();
-
-  roundRect(ctx, x, y, width, height, 8);
-  ctx.clip();
-
-  ctx.fillStyle = "#03060f";
-  ctx.fillRect(x, y, width, height);
-
-  const canDrawVideo = tile.video && tile.video.readyState >= 2;
-
-  if (canDrawVideo && tile.video) {
-    drawContain(ctx, tile.video, x, y, width, height);
-  } else {
-    ctx.fillStyle = "rgba(255,255,255,0.35)";
-    ctx.font = "800 15px Arial";
-    ctx.textAlign = "center";
-    ctx.fillText("Waiting for screen share…", x + width / 2, y + height / 2);
-    ctx.textAlign = "start";
-  }
-
-  const label = truncateToWidth(ctx, tile.name, width - 80);
-  ctx.font = "800 13px Arial";
-  const labelWidth = Math.min(width - 24, ctx.measureText(label).width + 46);
-
-  ctx.fillStyle = "rgba(15,107,255,0.85)";
-  roundRect(ctx, x + 12, y + 12, labelWidth, 30, 999);
-  ctx.fill();
-
-  ctx.fillStyle = "#ffffff";
-  ctx.beginPath();
-  ctx.arc(x + 27, y + 27, 4, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.font = "800 12px Arial";
-  ctx.fillText(label, x + 38, y + 32);
-
-  ctx.restore();
-}
-
-function drawCameraTile(
-  ctx: CanvasRenderingContext2D,
-  tile: VideoEntry,
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-) {
-  ctx.save();
-
-  roundRect(ctx, x, y, width, height, 8);
-  ctx.clip();
-
-  ctx.fillStyle = "#050914";
-  ctx.fillRect(x, y, width, height);
-
-  const canDrawVideo =
-    tile.video && tile.video.readyState >= 2 && tile.cameraOn !== false;
-
-  if (canDrawVideo && tile.video) {
-    drawCover(ctx, tile.video, x, y, width, height);
-  } else {
-    drawAvatarFallback(
-      ctx,
-      tile.name,
-      tile.cameraOn === false ? "Camera off" : "Connecting…",
-      x,
-      y,
-      width,
-      height,
-    );
-  }
-
-  const name = truncateToWidth(ctx, tile.name, Math.min(width - 24, 250) - 60);
-  ctx.font = "800 15px Arial";
-  const labelWidth = Math.min(
-    width - 24,
-    Math.max(120, ctx.measureText(name).width + 60),
-  );
-
-  ctx.fillStyle = "rgba(3,10,31,0.72)";
-  roundRect(ctx, x + 12, y + height - 48, labelWidth, 34, 10);
-  ctx.fill();
-
-  ctx.fillStyle = tile.micOn === false ? "#fecaca" : "#bbf7d0";
-  ctx.beginPath();
-  ctx.arc(x + 29, y + height - 31, 5, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.fillStyle = "#ffffff";
-  ctx.fillText(name, x + 42, y + height - 26);
-
-  if (tile.cameraOn === false) {
-    ctx.fillStyle = "rgba(3,10,31,0.72)";
-    roundRect(ctx, x + width - 90, y + 14, 76, 30, 999);
-    ctx.fill();
-
-    ctx.fillStyle = "#ffffff";
-    ctx.font = "800 11px Arial";
-    ctx.fillText("VIDEO OFF", x + width - 78, y + 34);
-  }
-
-  ctx.restore();
+  ctx.fillText(initials(name), x + width / 2, y + height / 2 - 7);
 }
 
 function drawTile(
   ctx: CanvasRenderingContext2D,
-  tile: VideoEntry,
+  entry: VideoEntry,
   x: number,
   y: number,
   width: number,
   height: number,
+  compact = false,
 ) {
-  if (tile.isScreen) {
-    drawScreenTile(ctx, tile, x, y, width, height);
-  } else {
-    drawCameraTile(ctx, tile, x, y, width, height);
-  }
-}
-
-function drawStageBackground(ctx: CanvasRenderingContext2D) {
-
-  ctx.fillStyle = "#0a1636";
-  ctx.fillRect(0, 68, LOGICAL_WIDTH, LOGICAL_HEIGHT - 68 - 92);
-
   ctx.save();
-  ctx.strokeStyle = "rgba(255,255,255,0.045)";
-  ctx.lineWidth = 1;
+  roundRect(ctx, x, y, width, height, compact ? 10 : 14);
+  ctx.clip();
 
-  for (let gx = 0; gx <= LOGICAL_WIDTH; gx += 34) {
-    ctx.beginPath();
-    ctx.moveTo(gx, 68);
-    ctx.lineTo(gx, LOGICAL_HEIGHT - 92);
-    ctx.stroke();
+  const canDrawVideo =
+    entry.video &&
+    entry.video.readyState >= 2 &&
+    entry.cameraOn !== false;
+
+  if (canDrawVideo && entry.video) {
+    drawCover(ctx, entry.video, x, y, width, height);
+  } else {
+    drawAvatar(ctx, entry.name, x, y, width, height);
   }
 
-  for (let gy = 68; gy <= LOGICAL_HEIGHT - 92; gy += 34) {
-    ctx.beginPath();
-    ctx.moveTo(0, gy);
-    ctx.lineTo(LOGICAL_WIDTH, gy);
-    ctx.stroke();
+  const overlay = ctx.createLinearGradient(x, y + height * 0.55, x, y + height);
+  overlay.addColorStop(0, "rgba(0,0,0,0)");
+  overlay.addColorStop(1, "rgba(0,0,0,0.8)");
+  ctx.fillStyle = overlay;
+  ctx.fillRect(x, y, width, height);
+
+  ctx.fillStyle = "rgba(7,22,51,0.82)";
+  roundRect(ctx, x + 10, y + height - 39, Math.min(width - 20, 175), 28, 8);
+  ctx.fill();
+
+  ctx.fillStyle = entry.micOn === false ? "#ff8c96" : "#86efac";
+  ctx.beginPath();
+  ctx.arc(x + 24, y + height - 25, 4, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = "#ffffff";
+  ctx.font = `800 ${compact ? 11 : 13}px Arial`;
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  ctx.fillText(
+    truncateText(ctx, entry.name, Math.min(width - 58, 125)),
+    x + 35,
+    y + height - 25,
+  );
+
+  if (entry.cameraOn === false) {
+    ctx.fillStyle = "rgba(7,22,51,0.88)";
+    roundRect(ctx, x + width - 70, y + 10, 60, 24, 999);
+    ctx.fill();
+    ctx.fillStyle = "#dbeafe";
+    ctx.font = "800 9px Arial";
+    ctx.textAlign = "center";
+    ctx.fillText("VIDEO OFF", x + width - 40, y + 22);
   }
 
   ctx.restore();
 
-  const glow = ctx.createRadialGradient(
-    LOGICAL_WIDTH / 2,
-    40,
-    10,
-    LOGICAL_WIDTH / 2,
-    40,
-    420,
-  );
-  glow.addColorStop(0, "rgba(59,130,246,0.16)");
-  glow.addColorStop(1, "rgba(59,130,246,0)");
-  ctx.fillStyle = glow;
-  ctx.fillRect(0, 68, LOGICAL_WIDTH, 300);
+  ctx.strokeStyle = "rgba(255,255,255,0.12)";
+  ctx.lineWidth = 1;
+  roundRect(ctx, x, y, width, height, compact ? 10 : 14);
+  ctx.stroke();
 }
 
-function drawTopBar(
+function drawHeader(
   ctx: CanvasRenderingContext2D,
   logo: HTMLImageElement | null,
-  participantCount: number,
+  width: number,
+  people: number,
+  layout: RecorderLayout,
 ) {
-  ctx.fillStyle = "#07122d";
-  ctx.fillRect(0, 0, LOGICAL_WIDTH, 68);
+  ctx.fillStyle = "#071633";
+  ctx.fillRect(0, 0, width, layout === "mobile" ? 82 : 68);
 
-  if (logo) {
-    ctx.drawImage(logo, 24, 17, 142, 43);
+  if (logo?.complete) {
+    const logoWidth = layout === "mobile" ? 116 : 132;
+    const logoHeight = layout === "mobile" ? 35 : 40;
+    ctx.drawImage(logo, 18, layout === "mobile" ? 22 : 14, logoWidth, logoHeight);
   } else {
     ctx.fillStyle = "#ffffff";
     ctx.font = "900 24px Arial";
-    ctx.fillText("Telefya", 30, 43);
+    ctx.fillText("Telefya", 20, 40);
   }
 
-  ctx.fillStyle = "rgba(16,217,143,0.14)";
-  roundRect(ctx, 842, 18, 100, 32, 999);
-  ctx.fill();
-  ctx.fillStyle = "#bbf7d0";
-  ctx.font = "800 13px Arial";
-  ctx.fillText("Secure", 878, 39);
-  ctx.beginPath();
-  ctx.arc(862, 33, 5, 0, Math.PI * 2);
-  ctx.fill();
+  ctx.fillStyle = "rgba(255,255,255,0.52)";
+  ctx.font = "800 11px Arial";
+  ctx.textAlign = "right";
+  ctx.fillText(
+    `${people} ${people === 1 ? "person" : "people"}`,
+    width - 104,
+    layout === "mobile" ? 41 : 35,
+  );
 
-  ctx.fillStyle = "rgba(255,255,255,0.08)";
-  roundRect(ctx, 954, 18, 120, 32, 999);
-  ctx.fill();
-  ctx.fillStyle = "rgba(255,255,255,0.86)";
-  ctx.font = "800 13px Arial";
-  ctx.fillText(`${participantCount} people`, 980, 39);
-
-  ctx.fillStyle = "rgba(239,68,68,0.16)";
-  roundRect(ctx, 1100, 18, 92, 32, 999);
-  ctx.fill();
-  ctx.fillStyle = "#fecaca";
-  ctx.font = "800 13px Arial";
-  ctx.fillText("REC", 1138, 39);
   ctx.fillStyle = "#ef4444";
-  ctx.beginPath();
-  ctx.arc(1120, 33, 6, 0, Math.PI * 2);
-  ctx.fill();
-}
-
-function drawChatPanel(ctx: CanvasRenderingContext2D, messages: any[]) {
-  const x = 946;
-  const y = 78;
-  const width = 324;
-  const height = 540;
-
-  ctx.fillStyle = "#0c1734";
-  roundRect(ctx, x, y, width, height, 16);
+  roundRect(ctx, width - 80, layout === "mobile" ? 25 : 21, 60, 28, 999);
   ctx.fill();
 
   ctx.fillStyle = "#ffffff";
-  ctx.font = "900 22px Arial";
-  ctx.fillText("Chat", x + 24, y + 42);
+  ctx.font = "900 11px Arial";
+  ctx.textAlign = "center";
+  ctx.fillText("REC", width - 50, layout === "mobile" ? 40 : 35);
 
-  ctx.fillStyle = "rgba(255,255,255,0.08)";
-  ctx.fillRect(x + 20, y + 60, width - 40, 1);
+  ctx.textAlign = "left";
+}
 
-  const recent = messages.slice(-5);
-  let cursorY = y + 98;
+function drawDesktopLayout(
+  ctx: CanvasRenderingContext2D,
+  entries: VideoEntry[],
+  messages: Array<{ userName?: string; message?: string }>,
+  logo: HTMLImageElement | null,
+) {
+  const width = 1280;
+  const height = 720;
+  const stageX = 16;
+  const stageY = 82;
+  const stageWidth = 910;
+  const stageHeight = 534;
+  const chatX = 942;
+  const chatWidth = 322;
 
-  if (!recent.length) {
-    ctx.fillStyle = "rgba(255,255,255,0.46)";
-    ctx.font = "700 14px Arial";
-    ctx.fillText("Meeting messages appear here.", x + 24, cursorY);
-    return;
+  ctx.fillStyle = "#050b1f";
+  ctx.fillRect(0, 0, width, height);
+  drawHeader(ctx, logo, width, entries.length, "desktop");
+
+  ctx.fillStyle = "#071633";
+  roundRect(ctx, stageX, stageY, stageWidth, stageHeight, 16);
+  ctx.fill();
+
+  const screen = entries.find((entry) => entry.isScreen);
+  const people = entries.filter((entry) => entry.id !== screen?.id);
+
+  if (screen) {
+    drawTile(ctx, screen, stageX + 10, stageY + 10, 656, stageHeight - 20);
+
+    people.slice(0, 4).forEach((person, index) => {
+      drawTile(
+        ctx,
+        person,
+        stageX + 678,
+        stageY + 10 + index * 129,
+        222,
+        119,
+        true,
+      );
+    });
+  } else {
+    const count = Math.max(people.length, 1);
+    const columns = count <= 1 ? 1 : count <= 4 ? 2 : 3;
+    const rows = Math.ceil(count / columns);
+    const gap = 8;
+    const tileWidth = (stageWidth - 20 - gap * (columns - 1)) / columns;
+    const tileHeight = (stageHeight - 20 - gap * (rows - 1)) / rows;
+
+    people.slice(0, 9).forEach((person, index) => {
+      const column = index % columns;
+      const row = Math.floor(index / columns);
+
+      drawTile(
+        ctx,
+        person,
+        stageX + 10 + column * (tileWidth + gap),
+        stageY + 10 + row * (tileHeight + gap),
+        tileWidth,
+        tileHeight,
+      );
+    });
   }
 
-  const bubbleWidth = width - 56;
-  const textMaxWidth = bubbleWidth - 32;
+  ctx.fillStyle = "#0c1734";
+  roundRect(ctx, chatX, stageY, chatWidth, stageHeight, 16);
+  ctx.fill();
 
-  for (const message of recent) {
-    const name = message.userName || "Participant";
-    const text = String(message.message || "");
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "900 18px Arial";
+  ctx.fillText("Chat", chatX + 20, stageY + 34);
 
-    ctx.fillStyle = "rgba(255,255,255,0.82)";
-    ctx.font = "800 14px Arial";
-    ctx.fillText(truncateToWidth(ctx, name, bubbleWidth), x + 24, cursorY);
+  ctx.fillStyle = "rgba(255,255,255,0.12)";
+  ctx.fillRect(chatX + 20, stageY + 52, chatWidth - 40, 1);
 
-    ctx.font = "700 14px Arial";
-    const words = text.split(/\s+/).filter(Boolean);
-    const lines: string[] = [];
-    let current = "";
+  const recentMessages = messages.slice(-5);
+  let cursorY = stageY + 80;
 
-    for (const word of words) {
-      const candidate = current ? `${current} ${word}` : word;
-      if (ctx.measureText(candidate).width > textMaxWidth && current) {
-        lines.push(current);
-        current = word;
-        if (lines.length === 2) break;
-      } else {
-        current = candidate;
-      }
-    }
-    if (current && lines.length < 2) lines.push(current);
-    if (lines.length === 2 && words.join(" ") !== lines.join(" ")) {
-      lines[1] = truncateToWidth(ctx, `${lines[1]}`, textMaxWidth);
-    }
+  if (!recentMessages.length) {
+    ctx.fillStyle = "rgba(255,255,255,0.42)";
+    ctx.font = "700 13px Arial";
+    ctx.fillText("Meeting messages appear here.", chatX + 20, cursorY);
+  }
 
-    const bubbleHeight = lines.length > 1 ? 74 : 54;
+  recentMessages.forEach((message) => {
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "800 12px Arial";
+    ctx.fillText(
+      truncateText(ctx, message.userName || "Participant", chatWidth - 40),
+      chatX + 20,
+      cursorY,
+    );
 
-    ctx.fillStyle = "rgba(255,255,255,0.10)";
-    roundRect(ctx, x + 24, cursorY + 10, bubbleWidth, bubbleHeight, 10);
+    ctx.fillStyle = "rgba(255,255,255,0.08)";
+    roundRect(ctx, chatX + 20, cursorY + 10, chatWidth - 40, 42, 9);
+    ctx.fill();
+
+    ctx.fillStyle = "rgba(255,255,255,0.75)";
+    ctx.font = "600 11px Arial";
+    ctx.fillText(
+      truncateText(ctx, message.message || "", chatWidth - 62),
+      chatX + 31,
+      cursorY + 31,
+    );
+
+    cursorY += 71;
+  });
+
+  ctx.fillStyle = "#0c1734";
+  ctx.fillRect(0, 628, width, 92);
+  ctx.fillStyle = "rgba(255,255,255,0.1)";
+  ctx.fillRect(0, 628, width, 1);
+
+  ["Mic", "Camera", "Share", "People", "More"].forEach((label, index) => {
+    const x = 416 + index * 90;
+
+    ctx.fillStyle = index === 4 ? "#2563eb" : "rgba(255,255,255,0.1)";
+    ctx.beginPath();
+    ctx.arc(x, 665, 25, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = "rgba(255,255,255,0.72)";
+    ctx.font = "800 10px Arial";
+    ctx.textAlign = "center";
+    ctx.fillText(label, x, 705);
+  });
+
+  ctx.textAlign = "left";
+}
+
+function drawMobileLayout(
+  ctx: CanvasRenderingContext2D,
+  entries: VideoEntry[],
+  messages: Array<{ userName?: string; message?: string }>,
+  logo: HTMLImageElement | null,
+) {
+  const width = 720;
+  const height = 1280;
+  const top = 98;
+  const bottomDock = 1122;
+
+  ctx.fillStyle = "#050b1f";
+  ctx.fillRect(0, 0, width, height);
+  drawHeader(ctx, logo, width, entries.length, "mobile");
+
+  const screen = entries.find((entry) => entry.isScreen);
+  const people = entries.filter((entry) => entry.id !== screen?.id);
+
+  if (screen) {
+    drawTile(ctx, screen, 14, top, 692, 380);
+
+    people.slice(0, 4).forEach((person, index) => {
+      const column = index % 2;
+      const row = Math.floor(index / 2);
+
+      drawTile(
+        ctx,
+        person,
+        14 + column * 348,
+        494 + row * 222,
+        344,
+        208,
+        true,
+      );
+    });
+  } else {
+    const visiblePeople = people.slice(0, 6);
+    const count = Math.max(visiblePeople.length, 1);
+    const columns = count <= 1 ? 1 : 2;
+    const rows = Math.ceil(count / columns);
+    const gap = 10;
+    const availableHeight = 720;
+    const tileWidth = (692 - gap * (columns - 1)) / columns;
+    const tileHeight = (availableHeight - gap * (rows - 1)) / rows;
+
+    visiblePeople.forEach((person, index) => {
+      const column = index % columns;
+      const row = Math.floor(index / columns);
+
+      drawTile(
+        ctx,
+        person,
+        14 + column * (tileWidth + gap),
+        top + row * (tileHeight + gap),
+        tileWidth,
+        tileHeight,
+      );
+    });
+  }
+
+  ctx.fillStyle = "rgba(12,23,52,0.96)";
+  roundRect(ctx, 14, 854, 692, 222, 16);
+  ctx.fill();
+
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "900 16px Arial";
+  ctx.fillText("Meeting chat", 34, 885);
+
+  const recentMessages = messages.slice(-3);
+  let cursorY = 915;
+
+  if (!recentMessages.length) {
+    ctx.fillStyle = "rgba(255,255,255,0.48)";
+    ctx.font = "700 12px Arial";
+    ctx.fillText("No messages yet.", 34, cursorY);
+  }
+
+  recentMessages.forEach((message) => {
+    ctx.fillStyle = "#bfdbfe";
+    ctx.font = "800 11px Arial";
+    ctx.fillText(
+      truncateText(ctx, message.userName || "Participant", 210),
+      34,
+      cursorY,
+    );
+
+    ctx.fillStyle = "rgba(255,255,255,0.08)";
+    roundRect(ctx, 34, cursorY + 9, 650, 32, 8);
     ctx.fill();
 
     ctx.fillStyle = "rgba(255,255,255,0.76)";
-    lines.forEach((line, index) => {
-      ctx.fillText(line, x + 40, cursorY + 42 + index * 20);
-    });
+    ctx.font = "600 11px Arial";
+    ctx.fillText(
+      truncateText(ctx, message.message || "", 625),
+      47,
+      cursorY + 30,
+    );
 
-    cursorY += bubbleHeight + 32;
-  }
-}
+    cursorY += 57;
+  });
 
-function drawDock(ctx: CanvasRenderingContext2D) {
-  ctx.fillStyle = "#08142f";
-  ctx.fillRect(0, 628, LOGICAL_WIDTH, 92);
+  ctx.fillStyle = "#071633";
+  ctx.fillRect(0, bottomDock, width, height - bottomDock);
+  ctx.fillStyle = "rgba(255,255,255,0.1)";
+  ctx.fillRect(0, bottomDock, width, 1);
 
-  const items = [
-    ["Chat", 446],
-    ["Mic", 524],
-    ["Video", 602],
-    ["Share", 680],
-    ["People", 758],
-    ["More", 836],
-  ];
+  ["Mic", "Camera", "Share", "People", "More"].forEach((label, index) => {
+    const x = 92 + index * 134;
 
-  for (const [label, x] of items) {
-    ctx.fillStyle = "rgba(255,255,255,0.10)";
-    roundRect(ctx, Number(x), 646, 58, 54, 14);
+    ctx.fillStyle = index === 4 ? "#2563eb" : "rgba(255,255,255,0.1)";
+    ctx.beginPath();
+    ctx.arc(x, 1170, 31, 0, Math.PI * 2);
     ctx.fill();
 
-    ctx.fillStyle = "rgba(255,255,255,0.82)";
-    ctx.font = "800 11px Arial";
+    ctx.fillStyle = "rgba(255,255,255,0.75)";
+    ctx.font = "800 10px Arial";
     ctx.textAlign = "center";
-    ctx.fillText(String(label), Number(x) + 29, 678);
-    ctx.textAlign = "start";
-  }
+    ctx.fillText(label, x, 1225);
+  });
 
-  ctx.fillStyle = "#ef4444";
-  roundRect(ctx, 914, 646, 66, 54, 14);
-  ctx.fill();
-  ctx.fillStyle = "#ffffff";
-  ctx.font = "900 13px Arial";
-  ctx.fillText("Leave", 929, 678);
+  ctx.textAlign = "left";
 }
 
 function drawWaitingSlate(
   ctx: CanvasRenderingContext2D,
   logo: HTMLImageElement | null,
+  layout: RecorderLayout,
 ) {
+  const width = layout === "mobile" ? 720 : 1280;
+  const height = layout === "mobile" ? 1280 : 720;
+
   ctx.fillStyle = "#050b1f";
-  ctx.fillRect(0, 0, LOGICAL_WIDTH, LOGICAL_HEIGHT);
+  ctx.fillRect(0, 0, width, height);
+  drawHeader(ctx, logo, width, 0, layout);
 
-  drawTopBar(ctx, logo, 0);
-
-  ctx.fillStyle = "#050914";
-  roundRect(ctx, 10, 78, 920, 540, 12);
-  ctx.fill();
-
-  ctx.fillStyle = "rgba(255,255,255,0.4)";
-  ctx.font = "800 16px Arial";
+  ctx.fillStyle = "rgba(255,255,255,0.86)";
+  ctx.font = `900 ${layout === "mobile" ? 24 : 30}px Arial`;
   ctx.textAlign = "center";
-  ctx.fillText("Waiting for the meeting to start…", 470, 350);
-  ctx.textAlign = "start";
+  ctx.fillText("Preparing meeting recording", width / 2, height / 2 - 8);
 
-  ctx.fillStyle = "#0c1734";
-  roundRect(ctx, 946, 78, 324, 540, 16);
-  ctx.fill();
+  ctx.fillStyle = "rgba(255,255,255,0.48)";
+  ctx.font = `700 ${layout === "mobile" ? 14 : 16}px Arial`;
+  ctx.fillText(
+    "Waiting for meeting audio and video...",
+    width / 2,
+    height / 2 + 28,
+  );
 
-  ctx.fillStyle = "#ffffff";
-  ctx.font = "900 22px Arial";
-  ctx.fillText("Chat", 970, 120);
-
-  ctx.fillStyle = "rgba(255,255,255,0.08)";
-  ctx.fillRect(966, 138, 284, 1);
-
-  ctx.fillStyle = "#08142f";
-  ctx.fillRect(0, 628, LOGICAL_WIDTH, 92);
+  ctx.textAlign = "left";
 }
 
 export default function RecorderPage() {
@@ -566,6 +557,14 @@ export default function RecorderPage() {
   const roomId = decodeURIComponent(params.roomId);
   const recordingId = searchParams.get("recordingId") || "";
   const secret = searchParams.get("secret") || "";
+  const recordingLayout: RecorderLayout =
+    searchParams.get("layout") === "mobile" ? "mobile" : "desktop";
+
+  const logicalWidth = recordingLayout === "mobile" ? 720 : 1280;
+  const logicalHeight = recordingLayout === "mobile" ? 1280 : 720;
+  const renderScale = 1;
+  const renderWidth = logicalWidth * renderScale;
+  const renderHeight = logicalHeight * renderScale;
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const videosRef = useRef<Map<string, HTMLVideoElement>>(new Map());
@@ -574,9 +573,8 @@ export default function RecorderPage() {
   const logoRef = useRef<HTMLImageElement | null>(null);
 
   const audioContextRef = useRef<AudioContext | null>(null);
-  const audioDestinationRef = useRef<MediaStreamAudioDestinationNode | null>(
-    null,
-  );
+  const audioDestinationRef =
+    useRef<MediaStreamAudioDestinationNode | null>(null);
   const audioSourcesRef = useRef<Map<string, MediaStreamAudioSourceNode>>(
     new Map(),
   );
@@ -619,11 +617,9 @@ export default function RecorderPage() {
     for (const item of streams) {
       if (audioSourcesRef.current.has(item.id)) continue;
 
-      const hasLiveAudio = item.stream.getAudioTracks().some((track) => {
-        return track.readyState === "live";
-      });
-
-      if (!hasLiveAudio) continue;
+      if (!item.stream.getAudioTracks().some((track) => track.readyState === "live")) {
+        continue;
+      }
 
       const source = audioContext.createMediaStreamSource(item.stream);
       source.connect(destination);
@@ -631,9 +627,7 @@ export default function RecorderPage() {
     }
 
     for (const [id, source] of audioSourcesRef.current) {
-      const stillExists = streams.some((stream) => stream.id === id);
-
-      if (!stillExists) {
+      if (!streams.some((stream) => stream.id === id)) {
         source.disconnect();
         audioSourcesRef.current.delete(id);
       }
@@ -678,22 +672,19 @@ export default function RecorderPage() {
   useEffect(() => {
     let animation = 0;
 
-    function draw() {
+    const draw = () => {
       const canvas = canvasRef.current;
       const ctx = canvas?.getContext("2d");
 
       if (!canvas || !ctx) {
-        animation = requestAnimationFrame(draw);
+        animation = window.setTimeout(draw, 80) as unknown as number;
         return;
       }
 
       ctx.save();
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.scale(RENDER_SCALE, RENDER_SCALE);
-
-      ctx.fillStyle = "#060b1f";
-      ctx.fillRect(0, 0, LOGICAL_WIDTH, LOGICAL_HEIGHT);
+      ctx.scale(renderScale, renderScale);
 
       const participantById = new Map<string, ParticipantMeta>();
 
@@ -711,12 +702,7 @@ export default function RecorderPage() {
           id: stream.id,
           userId: stream.userId,
           name: stream.isScreen
-            ? `${
-                stream.userName ||
-                participant?.userName ||
-                participant?.name ||
-                "Someone"
-              } — Presenting`
+            ? `${stream.userName || participant?.userName || participant?.name || "Someone"} presenting`
             : stream.userName ||
               participant?.userName ||
               participant?.name ||
@@ -734,10 +720,11 @@ export default function RecorderPage() {
         };
       });
 
-      const knownAudioOnly: VideoEntry[] = audioStreams
-        .filter((audio) => {
-          return !videoEntries.some((video) => video.userId === audio.userId);
-        })
+      const audioOnlyEntries = audioStreams
+        .filter(
+          (audio) =>
+            !videoEntries.some((video) => video.userId === audio.userId),
+        )
         .map((audio): VideoEntry => {
           const participant = audio.userId
             ? participantById.get(String(audio.userId))
@@ -756,64 +743,44 @@ export default function RecorderPage() {
                 ? participant.micOn
                 : true,
             cameraOn: false,
-            video: undefined,
           };
         });
 
-      const entries = [...videoEntries, ...knownAudioOnly];
+      const entries = [...videoEntries, ...audioOnlyEntries];
 
       if (!entries.length) {
-        drawWaitingSlate(ctx, logoRef.current);
-        ctx.restore();
-        animation = requestAnimationFrame(draw);
-        return;
-      }
-
-      drawTopBar(ctx, logoRef.current, Math.max(1, entries.length));
-      drawStageBackground(ctx);
-
-      const screen = entries.find((entry) => entry.isScreen);
-      const people = entries.filter((entry) => entry.id !== screen?.id);
-      const stageX = 10;
-      const stageY = 78;
-      const stageW = 920;
-      const stageH = 540;
-
-      if (screen) {
-        drawTile(ctx, screen, stageX, stageY, 690, stageH);
-
-        people.slice(0, 4).forEach((person, index) => {
-          drawTile(ctx, person, stageX + 704, stageY + index * 134, 216, 126);
-        });
+        drawWaitingSlate(ctx, logoRef.current, recordingLayout);
+      } else if (recordingLayout === "mobile") {
+        drawMobileLayout(
+          ctx,
+          entries,
+          room.messages || [],
+          logoRef.current,
+        );
       } else {
-        const count = Math.max(people.length, 1);
-        const cols = count <= 1 ? 1 : count <= 4 ? 2 : 3;
-        const rows = Math.ceil(count / cols);
-        const gap = 6;
-        const tileW = (stageW - gap * (cols - 1)) / cols;
-        const tileH = (stageH - gap * (rows - 1)) / rows;
-
-        people.slice(0, 9).forEach((person, index) => {
-          const col = index % cols;
-          const row = Math.floor(index / cols);
-          const x = stageX + col * (tileW + gap);
-          const y = stageY + row * (tileH + gap);
-
-          drawTile(ctx, person, x, y, tileW, tileH);
-        });
+        drawDesktopLayout(
+          ctx,
+          entries,
+          room.messages || [],
+          logoRef.current,
+        );
       }
-
-      drawChatPanel(ctx, room.messages || []);
-      drawDock(ctx);
 
       ctx.restore();
-      animation = requestAnimationFrame(draw);
-    }
+      animation = window.setTimeout(draw, 80) as unknown as number;
+    };
 
     draw();
 
-    return () => cancelAnimationFrame(animation);
-  }, [videoStreams, audioStreams, participants, room.messages]);
+    return () => window.clearTimeout(animation);
+  }, [
+    audioStreams,
+    participants,
+    recordingLayout,
+    renderScale,
+    room.messages,
+    videoStreams,
+  ]);
 
   useEffect(() => {
     window.telefyaRecorderReady =
@@ -836,16 +803,14 @@ export default function RecorderPage() {
       chunksRef.current = [];
       window.telefyaRecorderUploaded = false;
 
-      const canvasStream = canvas.captureStream(30);
-
+      const canvasStream = canvas.captureStream(12);
       const AudioContextClass =
         window.AudioContext || (window as any).webkitAudioContext;
-
       const audioContext = new AudioContextClass();
+
       await audioContext.resume();
 
       const destination = audioContext.createMediaStreamDestination();
-
       audioContextRef.current = audioContext;
       audioDestinationRef.current = destination;
 
@@ -858,7 +823,6 @@ export default function RecorderPage() {
       silentOscillator.start();
 
       silentOscillatorRef.current = silentOscillator;
-
       syncAudioSources(audioStreams);
 
       const mixedStream = new MediaStream([
@@ -867,18 +831,15 @@ export default function RecorderPage() {
       ]);
 
       const mimeType = MediaRecorder.isTypeSupported(
-        "video/webm;codecs=vp9,opus",
+        "video/webm;codecs=vp8,opus",
       )
-        ? "video/webm;codecs=vp9,opus"
-        : MediaRecorder.isTypeSupported("video/webm;codecs=vp8,opus")
-          ? "video/webm;codecs=vp8,opus"
-          : "video/webm";
+        ? "video/webm;codecs=vp8,opus"
+        : "video/webm";
 
       const recorder = new MediaRecorder(mixedStream, {
         mimeType,
-
-        videoBitsPerSecond: 6_000_000,
-        audioBitsPerSecond: 160_000,
+        videoBitsPerSecond: recordingLayout === "mobile" ? 1_500_000 : 2_000_000,
+        audioBitsPerSecond: 96_000,
       });
 
       recorder.ondataavailable = (event) => {
@@ -889,8 +850,6 @@ export default function RecorderPage() {
 
       recorder.start(1000);
       recorderRef.current = recorder;
-
-      console.log("Telefya recorder started");
     };
 
     window.telefyaStopRecording = async () => {
@@ -943,29 +902,26 @@ export default function RecorderPage() {
       } catch {}
 
       silentOscillatorRef.current = null;
-
       audioContextRef.current?.close().catch(() => undefined);
       audioContextRef.current = null;
       audioDestinationRef.current = null;
       recorderRef.current = null;
       chunksRef.current = [];
-
       window.telefyaRecorderUploaded = true;
-      console.log("Telefya recorder uploaded");
     };
 
     return () => {
       delete window.telefyaStartRecording;
       delete window.telefyaStopRecording;
     };
-  }, [audioStreams, recordingId, secret, syncAudioSources]);
+  }, [audioStreams, recordingId, recordingLayout, secret, syncAudioSources]);
 
   return (
     <main className="grid min-h-screen place-items-center bg-[#050b1f]">
       <canvas
         ref={canvasRef}
-        width={RENDER_WIDTH}
-        height={RENDER_HEIGHT}
+        width={renderWidth}
+        height={renderHeight}
         className="h-screen w-screen object-contain"
       />
     </main>

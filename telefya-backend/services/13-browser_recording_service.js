@@ -1,13 +1,40 @@
 const path = require("path");
 const crypto = require("crypto");
 const { chromium } = require("playwright");
-const fs = require("fs/promises");
+const fs = require("fs");
+
+function getRecorderBrowserPath() {
+  const candidates = [
+    process.env.RECORDER_CHROME_PATH,
+    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+    path.join(
+      process.env.LOCALAPPDATA || "",
+      "Google",
+      "Chrome",
+      "Application",
+      "chrome.exe",
+    ),
+  ];
+
+  return candidates.find(
+    (candidate) => candidate && fs.existsSync(candidate),
+  );
+}
 
 const RECORDINGS_DIR = process.env.RECORDINGS_DIR
   ? path.resolve(process.env.RECORDINGS_DIR)
   : path.join(process.cwd(), "recordings");
 
-const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3000";
+function getRecorderAppUrl() {
+  return (
+    process.env.RECORDER_APP_URL ||
+    process.env.FRONTEND_URL ||
+    "http://localhost:3000"
+  )
+    .trim()
+    .replace(/\/+$/, "");
+}
 const RECORDER_BOT_SECRET =
   process.env.RECORDER_BOT_SECRET || "dev_recorder_secret";
 
@@ -17,6 +44,28 @@ function createId() {
   return crypto.randomUUID
     ? crypto.randomUUID()
     : crypto.randomBytes(16).toString("hex");
+}
+
+function normalizeRecordingLayout(value) {
+  return value === "mobile" ? "mobile" : "desktop";
+}
+
+function getRecorderViewport(recordingLayout) {
+  if (recordingLayout === "mobile") {
+    return {
+      width: 430,
+      height: 932,
+      isMobile: true,
+      hasTouch: true,
+    };
+  }
+
+  return {
+    width: 1280,
+    height: 720,
+    isMobile: false,
+    hasTouch: false,
+  };
 }
 
 async function getRecordingStatus(db_query, recordingId) {
@@ -97,6 +146,7 @@ async function start_browser_recording_service({
   roomId,
   hostUserId,
   hostUserName,
+  recordingLayout = "desktop",
 }) {
   if (!roomId) {
     return {
@@ -130,6 +180,7 @@ async function start_browser_recording_service({
         roomId,
         fileName: existing.fileName,
         mimeType: "video/mp4",
+        recordingLayout: existing.recordingLayout,
         startedAt: new Date(existing.startedAt).toISOString(),
         alreadyRecording: true,
         finalizing: Boolean(existing.finalizing),
@@ -137,6 +188,8 @@ async function start_browser_recording_service({
     };
   }
 
+  const layout = normalizeRecordingLayout(recordingLayout);
+  const viewport = getRecorderViewport(layout);
   const recordingId = createId();
   const fileName = `${recordingId}.mp4`;
   const outputPath = path.join(RECORDINGS_DIR, fileName);
@@ -161,21 +214,43 @@ async function start_browser_recording_service({
     [
       recordingId,
       roomId,
-      hostUserId || null,
+      hostUserId,
       `Telefya recording - ${roomId}`,
       fileName,
       outputPath,
     ],
   );
 
-  const url = new URL(`/recording/${encodeURIComponent(roomId)}`, FRONTEND_URL);
-  url.searchParams.set("recordingId", recordingId);
-  url.searchParams.set("secret", RECORDER_BOT_SECRET);
-  url.searchParams.set("hostUserId", hostUserId || "");
-  url.searchParams.set("hostUserName", hostUserName || "Host");
+  const recorderUrl = new URL(
+    `/recording/${encodeURIComponent(roomId)}`,
+    getRecorderAppUrl(),
+  );
+
+  recorderUrl.searchParams.set("recordingId", recordingId);
+  recorderUrl.searchParams.set("secret", RECORDER_BOT_SECRET);
+  recorderUrl.searchParams.set("hostUserId", hostUserId);
+  recorderUrl.searchParams.set("hostUserName", hostUserName || "Host");
+  recorderUrl.searchParams.set("layout", recordingLayout);
+
+  console.log(
+    `[Recorder ${recordingId}] Opening recorder page: ${recorderUrl.toString()}`,
+  );
+
+  const executablePath = getRecorderBrowserPath();
+
+  if (!executablePath) {
+    throw new Error(
+      "Google Chrome was not found. Set RECORDER_CHROME_PATH in the backend .env.",
+    );
+  }
+
+  console.log(
+    `[Recorder ${recordingId}] Using browser: ${executablePath}`,
+  );
 
   const browser = await chromium.launch({
-    headless: true,
+    executablePath,
+    headless: process.env.RECORDER_HEADLESS !== "false",
     args: [
       "--autoplay-policy=no-user-gesture-required",
       "--use-fake-ui-for-media-stream",
@@ -190,10 +265,12 @@ async function start_browser_recording_service({
 
   const context = await browser.newContext({
     viewport: {
-      width: 1280,
-      height: 720,
+      width: viewport.width,
+      height: viewport.height,
     },
     deviceScaleFactor: 1,
+    isMobile: viewport.isMobile,
+    hasTouch: viewport.hasTouch,
     permissions: ["camera", "microphone"],
   });
 
@@ -207,8 +284,14 @@ async function start_browser_recording_service({
     console.error(`[Recorder ${recordingId}] page error:`, error.message);
   });
 
+  page.on("crash", () => {
+    console.error(
+      `[Recorder ${recordingId}] Chromium renderer crashed before recording could be finalized.`,
+    );
+  });
+
   try {
-    await page.goto(url.toString(), {
+    await page.goto(recorderUrl.toString(), {
       waitUntil: "domcontentloaded",
       timeout: 60000,
     });
@@ -229,6 +312,7 @@ async function start_browser_recording_service({
       page,
       outputPath,
       fileName,
+      recordingLayout: layout,
       startedAt: Date.now(),
       finalizing: false,
     };
@@ -246,6 +330,7 @@ async function start_browser_recording_service({
         roomId,
         fileName,
         mimeType: "video/mp4",
+        recordingLayout: layout,
         startedAt: new Date().toISOString(),
       },
     };
@@ -282,6 +367,7 @@ async function stop_browser_recording_service({ db_query, roomId }) {
         roomId,
         fileName: active.fileName,
         mimeType: "video/mp4",
+        recordingLayout: active.recordingLayout,
         finalizing: true,
       },
     };
@@ -311,15 +397,14 @@ async function stop_browser_recording_service({ db_query, roomId }) {
       roomId,
       fileName: active.fileName,
       mimeType: "video/mp4",
+      recordingLayout: active.recordingLayout,
     },
   };
 }
 
 async function force_stop_browser_recording(roomId) {
   const active = activeRecorders.get(roomId);
-  if (!active) return;
-
-  if (active.finalizing) return;
+  if (!active || active.finalizing) return;
 
   try {
     await active.browser.close();
@@ -337,6 +422,7 @@ function get_active_browser_recording(roomId) {
     roomId,
     fileName: active.fileName,
     outputPath: active.outputPath,
+    recordingLayout: active.recordingLayout,
     startedAt: active.startedAt,
     finalizing: Boolean(active.finalizing),
   };
