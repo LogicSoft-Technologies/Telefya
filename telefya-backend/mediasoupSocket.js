@@ -398,6 +398,7 @@ module.exports = async function mediasoupSocket(io, pubClient, subClient) {
       plan_name: policy.plan_name,
       status: policy.status,
       startedAt: policy.startedAt,
+      unlimitedHostAccess: Boolean(policy.unlimitedHostAccess),
       limits: policy.limits,
     };
   }
@@ -423,14 +424,37 @@ module.exports = async function mediasoupSocket(io, pubClient, subClient) {
 
     const subscription = await getUserSubscription(userId);
 
+    const unlimitedHostAccess =
+      Boolean(isHost) &&
+      (await getHostParticipantLimitOverride(userId)) === 0;
+
     const policy = {
       roomId,
       hostUserId: userId,
       hostUserName: userName || "Host",
       plan_code: subscription.plan_code,
-      plan_name: subscription.plan_name,
+      plan_name: unlimitedHostAccess
+        ? "Unlimited host access"
+        : subscription.plan_name,
       status: subscription.status,
-      limits: subscription.limits,
+      unlimitedHostAccess,
+      limits: {
+        ...subscription.limits,
+
+        // 0 is the public “unlimited” value. The timer below handles it
+        // explicitly and will not fall back to the 40-minute free limit.
+        max_meeting_minutes: unlimitedHostAccess
+          ? 0
+          : subscription.limits.max_meeting_minutes,
+
+        max_participants: unlimitedHostAccess
+          ? 0
+          : subscription.limits.max_participants,
+
+        recording_enabled: unlimitedHostAccess
+          ? true
+          : subscription.limits.recording_enabled,
+      },
       startedAt: existing?.startedAt || new Date().toISOString(),
       createdAtMs: existing?.createdAtMs || Date.now(),
     };
@@ -651,8 +675,30 @@ module.exports = async function mediasoupSocket(io, pubClient, subClient) {
     }
   }
 
-  function scheduleRoomDurationLimit(roomId, policy) {
-    if (!roomId || !policy || roomLimitTimers.has(roomId)) return;
+  function scheduleRoomDurationLimit(
+    roomId,
+    policy,
+    { replaceExisting = false } = {},
+  ) {
+    if (!roomId || !policy) return;
+
+    const existingTimers = roomLimitTimers.get(roomId);
+
+    if (existingTimers && !replaceExisting) {
+      return;
+    }
+
+    if (existingTimers && replaceExisting) {
+      clearTimeout(existingTimers.warningTimer);
+      clearTimeout(existingTimers.endTimer);
+      roomLimitTimers.delete(roomId);
+    }
+
+    // The admin unlimited override is host-owned. Nobody invited by this
+    // host can create a free-plan 40-minute timer for this room.
+    if (policy.unlimitedHostAccess) {
+      return;
+    }
 
     const maxMeetingMinutes = normalizeLimitNumber(
       policy.limits?.max_meeting_minutes,
@@ -1408,7 +1454,14 @@ module.exports = async function mediasoupSocket(io, pubClient, subClient) {
           });
 
           socket.data.billing = publicBillingPolicy(activeBillingPolicy);
-          scheduleRoomDurationLimit(roomId, activeBillingPolicy);
+          if (
+            joinResult.isHost &&
+            String(activeBillingPolicy.hostUserId) === String(userId)
+          ) {
+            scheduleRoomDurationLimit(roomId, activeBillingPolicy, {
+              replaceExisting: true,
+            });
+          }
 
           if (!isBot) {
             removePendingRequest(roomId, userId);
@@ -1861,8 +1914,108 @@ module.exports = async function mediasoupSocket(io, pubClient, subClient) {
       }
     });
 
-    socket.on("mute-all", ({ roomId, userId, mute }) => {
-      io.to(roomId).emit("muted-all", { roomId, userId, mute });
+    socket.on("mute-all", async ({ roomId }, callback) => {
+      try {
+        const safeRoomId = normalizeId(
+          roomId || socket.data?.roomId,
+        );
+        const authenticatedUserId =
+          getAuthenticatedSocketUserId(socket);
+        const socketUserId = normalizeId(
+          socket.data?.userId,
+        );
+        const room = rooms.get(safeRoomId);
+        const hostUserId = normalizeId(room?.hostUserId);
+
+        const isVerifiedHost =
+          Boolean(safeRoomId) &&
+          Boolean(authenticatedUserId) &&
+          socket.data?.isHost === true &&
+          authenticatedUserId === socketUserId &&
+          authenticatedUserId === hostUserId;
+
+        if (!isVerifiedHost) {
+          return callback?.({
+            success: false,
+            code: "HOST_ONLY",
+            message: "Only the active meeting host can mute all participants.",
+          });
+        }
+
+        const participants = Array.from(
+          getRoomParticipants(safeRoomId).values(),
+        );
+
+        const mutedUserIds = participants
+          .filter(
+            (participant) =>
+              participant.userId !== authenticatedUserId,
+          )
+          .map((participant) => participant.userId);
+
+        for (const participant of participants) {
+          if (participant.userId === authenticatedUserId) {
+            continue;
+          }
+
+          upsertRoomParticipant(safeRoomId, {
+            ...participant,
+            micOn: false,
+          });
+        }
+
+        const roomSocketIds = io.adapter?.rooms?.get(safeRoomId);
+
+        if (roomSocketIds) {
+          for (const roomSocketId of roomSocketIds) {
+            const participantSocket =
+              io.sockets?.get(roomSocketId);
+
+            if (
+              participantSocket?.data?.userId &&
+              normalizeId(participantSocket.data.userId) !==
+                authenticatedUserId
+            ) {
+              participantSocket.data.micOn = false;
+            }
+          }
+        }
+
+        io.to(safeRoomId).emit("muted-all", {
+          roomId: safeRoomId,
+          byUserId: authenticatedUserId,
+          mutedUserIds,
+          mute: true,
+          message: "The host muted all participants.",
+        });
+
+        recordRecordingEvent({
+          roomId: safeRoomId,
+          eventType: "host_muted_all",
+          actorUserId: authenticatedUserId,
+          actorName: socket.data?.userName || "Host",
+          message: "The host muted all participants.",
+          metadata: {
+            muted_user_ids: mutedUserIds,
+          },
+        });
+
+        return callback?.({
+          success: true,
+          mutedUserIds,
+          message: "All participants have been muted.",
+        });
+      } catch (error) {
+        console.error("[meeting] mute-all failed:", error);
+
+        return callback?.({
+          success: false,
+          code: "MUTE_ALL_FAILED",
+          message:
+            error?.message ||
+            "Unable to mute all participants.",
+        });
+      }
     });
 
     socket.on("stop-my-consumer-for-screen-share", async ({ userId }) => {

@@ -11,6 +11,10 @@ const user_logout_controller = require(
 );
 const auth_middleware = require("../../middleware/auth_middleware");
 
+const get_mobile_profile_controller = require(
+  "../../controllers/05-user_profile_controller",
+);
+
 const loadMeetingControllers = () => {
   try {
     return require("../../controllers/07_meeting_controller");
@@ -62,6 +66,12 @@ user_router.get(
   "/profile",
   auth_middleware,
   get_user_profile_controller,
+);
+
+user_router.get(
+  "/mobile/profile",
+  auth_middleware,
+  get_mobile_profile_controller,
 );
 
 user_router.patch(
