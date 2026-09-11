@@ -55,6 +55,24 @@ const {
 } = require("../../controllers/12-workspace_controller");
 
 const {
+  register_push_device_controller,
+  unregister_push_device_controller,
+} = require("../../controllers/20-push-notification_controller");
+
+const {
+  get_notification_preferences_controller,
+  update_notification_preferences_controller,
+} = require(
+  "../../controllers/21-notification-preferences_controller"
+);
+
+const {
+  report_meeting_telemetry_controller,
+} = require(
+  "../../controllers/22-meeting-telemetry_controller"
+);
+
+const {
   schedule_meeting_controller,
   get_meeting_controller,
   delete_meeting_controller,
@@ -72,6 +90,36 @@ user_router.get(
   "/mobile/profile",
   auth_middleware,
   get_mobile_profile_controller,
+);
+
+user_router.post(
+  "/push-devices",
+  auth_middleware,
+  register_push_device_controller,
+);
+
+user_router.delete(
+  "/push-devices",
+  auth_middleware,
+  unregister_push_device_controller,
+);
+
+user_router.get(
+  "/notification-preferences",
+  auth_middleware,
+  get_notification_preferences_controller,
+);
+
+user_router.put(
+  "/notification-preferences",
+  auth_middleware,
+  update_notification_preferences_controller,
+);
+
+user_router.post(
+  "/meeting-telemetry",
+  auth_middleware,
+  report_meeting_telemetry_controller,
 );
 
 user_router.patch(

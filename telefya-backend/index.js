@@ -32,6 +32,16 @@ const {
 } = require("./services/17-admin-mail-delivery_service");
 
 const {
+  startMeetingReminderWorker,
+  stopMeetingReminderWorker,
+} = require("./services/21-meeting-reminder_service");
+
+const {
+  startPushReceiptWorker,
+  stopPushReceiptWorker,
+} = require("./services/22-push-receipt-worker_service");
+
+const {
   stripe_webhook_controller,
 } = require("./controllers/14-billing_controller");
 
@@ -347,6 +357,8 @@ if (require.main === module) {
 
       if (campaignTablesReady) {
         startAdminMailDeliveryWorker(query);
+        startMeetingReminderWorker(query);
+        startPushReceiptWorker();
       } else {
         console.error(
           "[campaign-delivery] Worker was not started because campaign tables are unavailable.",
@@ -362,6 +374,8 @@ if (require.main === module) {
         console.log(`[server] ${signal} received. Shutting down.`);
 
         stopAdminMailDeliveryWorker();
+        stopMeetingReminderWorker();
+        stopPushReceiptWorker();
 
         io.close();
 

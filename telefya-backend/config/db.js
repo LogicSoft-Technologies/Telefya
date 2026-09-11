@@ -99,6 +99,67 @@ CREATE TABLE IF NOT EXISTS users (
 );
 `;
 
+const createPushDevicesTableQuery = `
+CREATE TABLE IF NOT EXISTS user_push_devices (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  user_id VARCHAR(100) NOT NULL,
+  expo_push_token VARCHAR(255) NOT NULL,
+  platform ENUM('android', 'ios') NOT NULL,
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    ON UPDATE CURRENT_TIMESTAMP,
+  last_seen_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+  UNIQUE KEY uq_push_device_token (expo_push_token),
+  INDEX idx_push_device_user_enabled (user_id, enabled)
+);
+`;
+
+const createUserNotificationPreferencesTableQuery = `
+CREATE TABLE IF NOT EXISTS user_notification_preferences (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  user_id VARCHAR(100) NOT NULL,
+  meeting_reminders BOOLEAN NOT NULL DEFAULT TRUE,
+  meeting_invitations BOOLEAN NOT NULL DEFAULT TRUE,
+  waiting_room_requests BOOLEAN NOT NULL DEFAULT TRUE,
+  recording_ready BOOLEAN NOT NULL DEFAULT TRUE,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    ON UPDATE CURRENT_TIMESTAMP,
+
+  UNIQUE KEY uq_user_notification_preferences_user (
+    user_id
+  )
+);
+`;
+
+const createMeetingNotificationDeliveriesTableQuery = `
+CREATE TABLE IF NOT EXISTS meeting_notification_deliveries (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  notification_type VARCHAR(80) NOT NULL,
+  meeting_id BIGINT NOT NULL,
+  target_user_id VARCHAR(100) NOT NULL,
+  reference_key VARCHAR(220) NOT NULL,
+  status ENUM('processing', 'sent', 'failed')
+    NOT NULL DEFAULT 'processing',
+  error_message VARCHAR(500) NULL,
+  sent_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    ON UPDATE CURRENT_TIMESTAMP,
+
+  UNIQUE KEY uq_meeting_notification_delivery (reference_key),
+  INDEX idx_meeting_notification_delivery_status (
+    status,
+    created_at
+  ),
+  INDEX idx_meeting_notification_delivery_meeting (
+    meeting_id,
+    target_user_id
+  )
+);
+`;
+
 const createMeetingAttendanceTableQuery = `
 CREATE TABLE IF NOT EXISTS meeting_attendance (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -116,6 +177,71 @@ CREATE TABLE IF NOT EXISTS meeting_attendance (
   INDEX idx_attendance_joined_at (joined_at)
 );
 `;
+
+const createMeetingMessagesTableQuery = `
+CREATE TABLE IF NOT EXISTS meeting_messages (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  room_id VARCHAR(120) NOT NULL,
+  message_id VARCHAR(100) NOT NULL,
+  user_id VARCHAR(100) NOT NULL,
+  user_name VARCHAR(255) NOT NULL,
+  message TEXT NOT NULL,
+  is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NULL,
+  deleted_at DATETIME NULL,
+
+  UNIQUE KEY uq_meeting_messages_message_id (message_id),
+  INDEX idx_meeting_messages_room_created (room_id, created_at),
+  INDEX idx_meeting_messages_user (user_id)
+);
+`;
+
+const createMeetingTelemetryEventsTableQuery = `
+CREATE TABLE IF NOT EXISTS meeting_telemetry_events (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  user_id VARCHAR(100) NOT NULL,
+  room_id VARCHAR(120) NOT NULL,
+  event_type ENUM(
+    'poor_network',
+    'meeting_join_failed',
+    'meeting_reconnected'
+  ) NOT NULL,
+  quality_level ENUM('unknown', 'good', 'fair', 'poor') NULL,
+  round_trip_time_ms INT NULL,
+  jitter_ms INT NULL,
+  packet_loss_percent DECIMAL(5,2) NULL,
+  bitrate_kbps INT NULL,
+  metadata JSON NULL,
+  occurred_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+  INDEX idx_meeting_telemetry_room_time (room_id, occurred_at),
+  INDEX idx_meeting_telemetry_user_time (user_id, occurred_at),
+  INDEX idx_meeting_telemetry_event_time (event_type, occurred_at)
+);
+`;
+
+async function createMeetingMessagesTable() {
+  try {
+    await query(createMeetingMessagesTableQuery);
+    console.log("meeting_messages table created successfully");
+  } catch (error) {
+    console.error("Error creating meeting_messages table:", error);
+  }
+}
+
+async function createMeetingTelemetryEventsTable() {
+  try {
+    await query(createMeetingTelemetryEventsTableQuery);
+    console.log("meeting_telemetry_events table created successfully");
+  } catch (error) {
+    console.error(
+      "Error creating meeting_telemetry_events table:",
+      error,
+    );
+  }
+}
 
 const createMeetingSpeakerStatusesTableQuery = `
 CREATE TABLE IF NOT EXISTS meeting_speaker_statuses (
@@ -720,6 +846,37 @@ CREATE TABLE IF NOT EXISTS meeting_session_events (
 );
 `;
 
+const createPushNotificationTicketsTableQuery = `
+CREATE TABLE IF NOT EXISTS push_notification_tickets (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  expo_ticket_id VARCHAR(120) NOT NULL,
+  expo_push_token VARCHAR(255) NOT NULL,
+  user_id VARCHAR(100) NOT NULL,
+  status ENUM('accepted', 'delivered', 'failed')
+    NOT NULL DEFAULT 'accepted',
+  attempt_count INT NOT NULL DEFAULT 0,
+  next_check_at DATETIME NOT NULL,
+  checked_at DATETIME NULL,
+  delivered_at DATETIME NULL,
+  error_code VARCHAR(120) NULL,
+  error_message VARCHAR(500) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    ON UPDATE CURRENT_TIMESTAMP,
+
+  UNIQUE KEY uq_push_notification_ticket (
+    expo_ticket_id
+  ),
+  INDEX idx_push_notification_ticket_check (
+    status,
+    next_check_at
+  ),
+  INDEX idx_push_notification_ticket_token (
+    expo_push_token
+  )
+);
+`;
+
 const createMeetingQualitySamplesTableQuery = `
 CREATE TABLE IF NOT EXISTS meeting_quality_samples (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -765,6 +922,66 @@ async function createUsersTable() {
     console.log("Users table created successfully");
   } catch (error) {
     console.error("Error creating Users table:", error);
+  }
+}
+
+async function createPushDevicesTable() {
+  try {
+    await query(createPushDevicesTableQuery);
+    console.log("user_push_devices table created successfully");
+  } catch (error) {
+    console.error("Error creating user_push_devices table:", error);
+  }
+}
+
+async function createUserNotificationPreferencesTable() {
+  try {
+    await query(
+      createUserNotificationPreferencesTableQuery,
+    );
+
+    console.log(
+      "user_notification_preferences table created successfully",
+    );
+  } catch (error) {
+    console.error(
+      "Error creating user_notification_preferences table:",
+      error,
+    );
+  }
+}
+
+async function createMeetingNotificationDeliveriesTable() {
+  try {
+    await query(
+      createMeetingNotificationDeliveriesTableQuery,
+    );
+
+    console.log(
+      "meeting_notification_deliveries table created successfully",
+    );
+  } catch (error) {
+    console.error(
+      "Error creating meeting_notification_deliveries table:",
+      error,
+    );
+  }
+}
+
+async function createPushNotificationTicketsTable() {
+  try {
+    await query(
+      createPushNotificationTicketsTableQuery,
+    );
+
+    console.log(
+      "push_notification_tickets table created successfully",
+    );
+  } catch (error) {
+    console.error(
+      "Error creating push_notification_tickets table:",
+      error,
+    );
   }
 }
 
@@ -978,6 +1195,15 @@ async function createMeetingAttendanceTable() {
     console.log("meeting_attendance table created successfully");
   } catch (error) {
     console.error("Error creating meeting attendance table:", error);
+  }
+}
+
+async function createMeetingMessagesTable() {
+  try {
+    await query(createMeetingMessagesTableQuery);
+    console.log("meeting_messages table created successfully");
+  } catch (error) {
+    console.error("Error creating meeting_messages table:", error);
   }
 }
 
@@ -1264,6 +1490,10 @@ const creeateDBandTables = async () => {
   if (hasDB) {
     setTimeout(async () => {
       await createUsersTable();
+      await createPushDevicesTable();
+      await createPushNotificationTicketsTable();
+      await createUserNotificationPreferencesTable();
+      await createMeetingNotificationDeliveriesTable();
       await createSchedularTable();
       await createMeetingMembersTable();
       await createMeetingSpeakerStatusesTable();
@@ -1274,6 +1504,8 @@ const creeateDBandTables = async () => {
       await createMeetingRecordsTable();
       await createMeetingVideoRecordTable();
       await createMeetingAttendanceTable();
+      await createMeetingMessagesTable();
+      await createMeetingTelemetryEventsTable();
       await createMeetingRecordingsTable();
       await createWorkspaceFeatureTables();
       await createBillingTables();

@@ -38,6 +38,9 @@ const {
   get_current_subscription_service,
   get_usage_entitlement_service,
 } = require("./services/14-billing_service");
+const {
+  notify_waiting_room_request,
+} = require("./services/20-push-notification_service");
 
 module.exports = async function mediasoupSocket(io, pubClient, subClient) {
   setIo(io);
@@ -62,6 +65,37 @@ module.exports = async function mediasoupSocket(io, pubClient, subClient) {
     }).catch((error) => {
       console.warn("[recording-event] Unable to save event:", error.message);
     });
+  }
+
+  async function getChatHistory(roomId) {
+    const rows = await query(
+      `
+        SELECT
+          room_id AS roomId,
+          message_id AS messageId,
+          message,
+          user_name AS userName,
+          user_id AS userId,
+          created_at AS time,
+          updated_at AS updatedAt
+        FROM meeting_messages
+        WHERE room_id = ?
+          AND is_deleted = FALSE
+        ORDER BY created_at ASC
+        LIMIT 200
+      `,
+      [roomId],
+    );
+
+    return rows.map((row) => ({
+      ...row,
+      time: new Date(row.time).toISOString(),
+      edited: Boolean(row.updatedAt),
+    }));
+  }
+
+  function normalizeChatMessage(value) {
+    return String(value ?? "").trim().slice(0, 4000);
   }
 
   // Key: `${roomId}:${userId}`
@@ -1090,6 +1124,19 @@ module.exports = async function mediasoupSocket(io, pubClient, subClient) {
 
           const hostIsConnected = emitWaitingRequestToHost(request);
 
+          if (access.hostUserId) {
+            void notify_waiting_room_request({
+              hostUserId: access.hostUserId,
+              roomId: normalizedRoomId,
+              requesterName: normalizedUserName,
+            }).catch((error) => {
+              console.warn(
+                "[push] Waiting-room notification failed:",
+                error.message,
+              );
+            });
+          }
+
           socket.emit("waiting-room:status", {
             roomId: normalizedRoomId,
             status: "pending",
@@ -1493,6 +1540,18 @@ module.exports = async function mediasoupSocket(io, pubClient, subClient) {
           }
 
           socket.emit("joined", payload);
+
+          try {
+            socket.emit("chat-history", {
+              roomId,
+              messages: await getChatHistory(roomId),
+            });
+          } catch (error) {
+            console.warn(
+              `[chat] Unable to load history for ${roomId}:`,
+              error.message,
+            );
+          }
 
           if (!isBot) {
             void recordMeetingSessionEvent(socket, "joined", {
@@ -1920,6 +1979,87 @@ module.exports = async function mediasoupSocket(io, pubClient, subClient) {
           roomId || socket.data?.roomId,
         );
         const authenticatedUserId =
+
+      socket.on(
+        "host-mute-participant",
+        async ({ roomId, targetUserId }, callback) => {
+          try {
+            const safeRoomId = normalizeId(roomId || socket.data?.roomId);
+            const authenticatedUserId = getAuthenticatedSocketUserId(socket);
+            const hostUserId = normalizeId(rooms.get(safeRoomId)?.hostUserId);
+            const safeTargetUserId = normalizeId(targetUserId);
+            const isVerifiedHost =
+              Boolean(safeRoomId) &&
+              Boolean(authenticatedUserId) &&
+              socket.data?.isHost === true &&
+              authenticatedUserId === normalizeId(socket.data?.userId) &&
+              authenticatedUserId === hostUserId;
+
+            if (!isVerifiedHost) {
+              return callback?.({ success: false, code: "HOST_ONLY", message: "Only the active meeting host can mute participants." });
+            }
+            if (!safeTargetUserId || safeTargetUserId === authenticatedUserId) {
+              return callback?.({ success: false, message: "The host cannot mute themselves." });
+            }
+            const participant = getRoomParticipants(safeRoomId).get(safeTargetUserId);
+            if (!participant || participant.isHost) {
+              return callback?.({ success: false, message: "That participant is no longer available." });
+            }
+            upsertRoomParticipant(safeRoomId, { ...participant, micOn: false });
+            const roomSocketIds = io.adapter?.rooms?.get(safeRoomId) ?? [];
+            for (const roomSocketId of roomSocketIds) {
+              const participantSocket = io.sockets?.get(roomSocketId);
+              if (normalizeId(participantSocket?.data?.userId) === safeTargetUserId) {
+                participantSocket.data.micOn = false;
+                participantSocket.emit("host-muted-participant", { roomId: safeRoomId, targetUserId: safeTargetUserId, byUserId: authenticatedUserId });
+              }
+            }
+            io.to(safeRoomId).emit("participant-media-state", { userId: safeTargetUserId, userName: participant.userName, micOn: false });
+            recordRecordingEvent({ roomId: safeRoomId, eventType: "host_muted_participant", actorUserId: authenticatedUserId, actorName: socket.data?.userName || "Host", message: `The host muted ${participant.userName}.`, metadata: { target_user_id: safeTargetUserId } });
+            return callback?.({ success: true, message: `${participant.userName} has been muted.` });
+          } catch (error) {
+            console.error("[meeting] host-mute-participant failed:", error);
+            return callback?.({ success: false, message: error?.message || "Unable to mute that participant." });
+          }
+        },
+      );
+
+      socket.on(
+        "host-remove-participant",
+        async ({ roomId, targetUserId }, callback) => {
+          try {
+            const safeRoomId = normalizeId(roomId || socket.data?.roomId);
+            const authenticatedUserId = getAuthenticatedSocketUserId(socket);
+            const hostUserId = normalizeId(rooms.get(safeRoomId)?.hostUserId);
+            const safeTargetUserId = normalizeId(targetUserId);
+            const isVerifiedHost = Boolean(safeRoomId) && Boolean(authenticatedUserId) && socket.data?.isHost === true && authenticatedUserId === normalizeId(socket.data?.userId) && authenticatedUserId === hostUserId;
+            if (!isVerifiedHost) return callback?.({ success: false, code: "HOST_ONLY", message: "Only the active meeting host can remove participants." });
+            if (!safeTargetUserId || safeTargetUserId === authenticatedUserId) return callback?.({ success: false, message: "The host cannot remove themselves." });
+            const participant = getRoomParticipants(safeRoomId).get(safeTargetUserId);
+            if (!participant || participant.isHost) return callback?.({ success: false, message: "That participant is no longer available." });
+            const roomSocketIds = io.adapter?.rooms?.get(safeRoomId) ?? [];
+            const targetSockets = [];
+            for (const roomSocketId of roomSocketIds) {
+              const participantSocket = io.sockets?.get(roomSocketId);
+              if (normalizeId(participantSocket?.data?.userId) === safeTargetUserId) targetSockets.push(participantSocket);
+            }
+            await leaveRoom(safeRoomId, safeTargetUserId);
+            removeRoomParticipant(safeRoomId, safeTargetUserId);
+            for (const targetSocket of targetSockets) {
+              await finish_attendance_service(query, { attendanceId: targetSocket.data?.attendanceId, roomId: safeRoomId, userId: safeTargetUserId });
+              targetSocket.emit("host-removed", { roomId: safeRoomId, message: "The host removed you from this meeting." });
+              targetSocket.leave(safeRoomId);
+              targetSocket.data = {};
+            }
+            io.to(safeRoomId).emit("user-left", { userId: safeTargetUserId, message: `${participant.userName} was removed by the host.` });
+            recordRecordingEvent({ roomId: safeRoomId, eventType: "host_removed_participant", actorUserId: authenticatedUserId, actorName: socket.data?.userName || "Host", message: `The host removed ${participant.userName}.`, metadata: { target_user_id: safeTargetUserId } });
+            return callback?.({ success: true, message: `${participant.userName} was removed.` });
+          } catch (error) {
+            console.error("[meeting] host-remove-participant failed:", error);
+            return callback?.({ success: false, message: error?.message || "Unable to remove that participant." });
+          }
+        },
+      );
           getAuthenticatedSocketUserId(socket);
         const socketUserId = normalizeId(
           socket.data?.userId,
@@ -2371,47 +2511,164 @@ module.exports = async function mediasoupSocket(io, pubClient, subClient) {
 
     socket.on(
       "send-message",
-      ({ roomId, message, time, userName, socketId, messageId }) => {
-        const safeRoomId = roomId || socket.data?.roomId;
+      async ({ roomId, message, messageId }, callback) => {
+        try {
+          const safeRoomId = roomId || socket.data?.roomId;
+          const userId = String(socket.data?.userId ?? "").trim();
+          const userName =
+            String(socket.data?.userName ?? "").trim() || "Participant";
+          const safeMessageId = String(messageId ?? "").trim();
+          const safeMessage = normalizeChatMessage(message);
 
-        io.to(safeRoomId).emit("response-send-message", {
-          roomId: safeRoomId,
-          message,
-          time,
-          userName,
-          socketId,
-          messageId,
-        });
+          if (!safeRoomId || !userId || !safeMessageId || !safeMessage) {
+            throw new Error("A valid meeting message is required.");
+          }
 
-        recordRecordingEvent({
-          roomId: safeRoomId,
-          eventType: "chat_message",
-          actorUserId: socket.data?.userId || null,
-          actorName: userName || socket.data?.userName || "Participant",
-          message,
-          metadata: {
-            message_id: messageId || null,
-            sent_at: time || null,
-          },
-        });
+          if (safeRoomId !== socket.data?.roomId) {
+            throw new Error("Chat room mismatch.");
+          }
+
+          await query(
+            `
+              INSERT INTO meeting_messages (
+                room_id,
+                message_id,
+                user_id,
+                user_name,
+                message
+              )
+              VALUES (?, ?, ?, ?, ?)
+            `,
+            [safeRoomId, safeMessageId, userId, userName, safeMessage],
+          );
+
+          const payload = {
+            roomId: safeRoomId,
+            messageId: safeMessageId,
+            message: safeMessage,
+            userId,
+            userName,
+            socketId: socket.id,
+            time: new Date().toISOString(),
+            edited: false,
+          };
+
+          io.to(safeRoomId).emit("response-send-message", payload);
+
+          recordRecordingEvent({
+            roomId: safeRoomId,
+            eventType: "chat_message",
+            actorUserId: userId,
+            actorName: userName,
+            message: safeMessage,
+            metadata: {
+              message_id: safeMessageId,
+              sent_at: payload.time,
+            },
+          });
+
+          callback?.({ success: true, message: payload });
+        } catch (error) {
+          console.error("[chat] Unable to save message:", error);
+          callback?.({
+            success: false,
+            error: "Unable to send your message. Please try again.",
+          });
+        }
       },
     );
 
-    socket.on("edit-message", ({ roomId, messageId, newMessage, socketId }) => {
-      io.to(roomId).emit("response-edit-message", {
-        roomId,
-        messageId,
-        newMessage,
-        socketId,
-      });
-    });
+    socket.on(
+      "edit-message",
+      async ({ roomId, messageId, newMessage }, callback) => {
+        try {
+          const safeRoomId = roomId || socket.data?.roomId;
+          const userId = String(socket.data?.userId ?? "").trim();
+          const safeMessageId = String(messageId ?? "").trim();
+          const safeMessage = normalizeChatMessage(newMessage);
 
-    socket.on("delete-message", ({ roomId, messageId }) => {
-      io.to(roomId).emit("response-delete-message", {
-        roomId,
-        messageId,
-      });
-    });
+          if (!safeRoomId || !userId || !safeMessageId || !safeMessage) {
+            throw new Error("A valid edited message is required.");
+          }
+
+          const result = await query(
+            `
+              UPDATE meeting_messages
+              SET
+                message = ?,
+                updated_at = CURRENT_TIMESTAMP
+              WHERE room_id = ?
+                AND message_id = ?
+                AND user_id = ?
+                AND is_deleted = FALSE
+            `,
+            [safeMessage, safeRoomId, safeMessageId, userId],
+          );
+
+          if (!result.affectedRows) {
+            throw new Error("You can only edit your own message.");
+          }
+
+          io.to(safeRoomId).emit("response-edit-message", {
+            roomId: safeRoomId,
+            messageId: safeMessageId,
+            newMessage: safeMessage,
+          });
+
+          callback?.({ success: true });
+        } catch (error) {
+          callback?.({
+            success: false,
+            error: error.message || "Unable to edit this message.",
+          });
+        }
+      },
+    );
+
+    socket.on(
+      "delete-message",
+      async ({ roomId, messageId }, callback) => {
+        try {
+          const safeRoomId = roomId || socket.data?.roomId;
+          const userId = String(socket.data?.userId ?? "").trim();
+          const safeMessageId = String(messageId ?? "").trim();
+
+          if (!safeRoomId || !userId || !safeMessageId) {
+            throw new Error("A valid message is required.");
+          }
+
+          const result = await query(
+            `
+              UPDATE meeting_messages
+              SET
+                is_deleted = TRUE,
+                deleted_at = CURRENT_TIMESTAMP
+              WHERE room_id = ?
+                AND message_id = ?
+                AND user_id = ?
+                AND is_deleted = FALSE
+            `,
+            [safeRoomId, safeMessageId, userId],
+          );
+
+          if (!result.affectedRows) {
+            throw new Error("You can only delete your own message.");
+          }
+
+          io.to(safeRoomId).emit("response-delete-message", {
+            roomId: safeRoomId,
+            messageId: safeMessageId,
+          });
+
+          callback?.({ success: true });
+        } catch (error) {
+          callback?.({
+            success: false,
+            error: error.message || "Unable to delete this message.",
+          });
+        }
+      },
+    );
 
     socket.on("save-rtp-capabilities", async ({ rtpCapabilities }) => {
       const { roomId, userId } = socket.data || {};

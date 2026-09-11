@@ -1,4 +1,7 @@
 const crypto = require("crypto");
+const {
+  notify_meeting_invitation,
+} = require("./20-push-notification_service");
 
 function cleanString(value, fallback = "") {
   if (value === undefined || value === null) return fallback;
@@ -352,6 +355,17 @@ const invite_meeting_member_service = async (
       hostUserId,
     ],
   );
+
+  void notify_meeting_invitation({
+    meeting,
+    invitedUserId: invitedUser.user_id,
+    memberRole,
+  }).catch((error) => {
+    console.warn(
+      "[push] Unable to send meeting invitation:",
+      error.message,
+    );
+  });
 
   return {
     success: true,

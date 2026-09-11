@@ -6,6 +6,9 @@ const { query } = require("../config/db");
 const {
   add_recording_asset_usage_service,
 } = require("../services/14-billing_service");
+const {
+  notify_recording_ready,
+} = require("../services/20-push-notification_service");
 
 const RECORDINGS_DIR = process.env.RECORDINGS_DIR
   ? path.resolve(process.env.RECORDINGS_DIR)
@@ -189,6 +192,35 @@ async function upload_recording_blob_controller(req, res) {
     );
 
     await recordBillingUsageForRecording(recordingId, stat.size);
+
+    const recordingRows = await query(
+      `
+        SELECT
+          host_user_id,
+          room_id,
+          title
+        FROM meeting_recordings
+        WHERE recording_id = ?
+        LIMIT 1
+      `,
+      [recordingId],
+    );
+
+    const recording = recordingRows?.[0];
+
+    if (recording?.host_user_id) {
+      void notify_recording_ready({
+        hostUserId: recording.host_user_id,
+        recordingId,
+        roomId: recording.room_id,
+        title: recording.title || fileName,
+      }).catch((error) => {
+        console.warn(
+          "[push] Recording-ready notification failed:",
+          error.message,
+        );
+      });
+    }
 
     try {
       await fsp.unlink(webmPath);

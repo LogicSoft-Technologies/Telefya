@@ -17,45 +17,91 @@ const authPrefixes = [
   "/verify-email",
 ];
 
+const noIndexPrefixes = [
+  "/login",
+  "/register",
+  "/verify-email",
+  "/forgot-password",
+  "/reset-password",
+  "/choose-plan",
+  "/admin",
+  "/analytics",
+  "/attendee",
+  "/billing",
+  "/conference-lobby",
+  "/host",
+  "/live",
+  "/lobby",
+  "/meetings",
+  "/recording",
+  "/settings",
+  "/speaker",
+];
+
+function matchesPrefix(pathname: string, prefix: string) {
+  return pathname === prefix || pathname.startsWith(`${prefix}/`);
+}
+
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
   const isPlatformRoute = platformPrefixes.some((prefix) =>
-    pathname.startsWith(prefix)
+    matchesPrefix(pathname, prefix),
   );
 
-  const isAuthRoute = authPrefixes.some((prefix) => pathname.startsWith(prefix));
+  const isAuthRoute = authPrefixes.some((prefix) =>
+    matchesPrefix(pathname, prefix),
+  );
+
+  const shouldNoIndex = noIndexPrefixes.some((prefix) =>
+    matchesPrefix(pathname, prefix),
+  );
 
   const cookieToken =
     request.cookies.get("telefya_access_token")?.value ||
     request.cookies.get("accessToken")?.value ||
     request.cookies.get("token")?.value;
 
-  if (isPlatformRoute && !cookieToken) {
-    // Current app stores token in localStorage, so the client guard remains
-    // the real protection. This only protects future cookie-based sessions.
-    return NextResponse.next();
-  }
-
   if (isAuthRoute && cookieToken) {
     return NextResponse.redirect(new URL("/lobby", request.url));
   }
 
-  return NextResponse.next();
+  const response = NextResponse.next();
+
+  if (shouldNoIndex) {
+    response.headers.set(
+      "X-Robots-Tag",
+      "noindex, nofollow, noarchive",
+    );
+  }
+
+  if (isPlatformRoute && !cookieToken) {
+    return response;
+  }
+
+  return response;
 }
 
 export const config = {
   matcher: [
-    "/lobby/:path*",
-    "/live/:path*",
-    "/speaker/:path*",
-    "/host/:path*",
-    "/attendee/:path*",
-    "/admin/:path*",
     "/login",
     "/register",
+    "/verify-email",
     "/forgot-password",
     "/reset-password",
-    "/verify-email",
+    "/choose-plan",
+
+    "/admin/:path*",
+    "/analytics/:path*",
+    "/attendee/:path*",
+    "/billing/:path*",
+    "/conference-lobby/:path*",
+    "/host/:path*",
+    "/live/:path*",
+    "/lobby/:path*",
+    "/meetings/:path*",
+    "/recording/:path*",
+    "/settings/:path*",
+    "/speaker/:path*",
   ],
 };

@@ -8,6 +8,9 @@ const crypto = require("crypto");
 const {
   get_latest_recording_chat_events_service,
 } = require("./15-recording-event_service");
+const {
+  notify_recording_ready,
+} = require("./20-push-notification_service");
 
 const RECORDINGS_DIR = process.env.RECORDINGS_DIR
   ? path.resolve(process.env.RECORDINGS_DIR)
@@ -811,6 +814,17 @@ async function stop_ffmpeg_recording_service({ db_query, roomId }) {
       SET status = 'ready', stopped_at = NOW(), file_path = ?, file_name = ?, size_bytes = ?, duration_seconds = ?, expires_at = DATE_ADD(NOW(), INTERVAL ? DAY)
       WHERE recording_id = ?
     `, [active.outputPath, active.fileName, fileSize, durationSeconds, RECORDING_RETENTION_DAYS, active.recordingId]);
+    void notify_recording_ready({
+      hostUserId: active.hostUserId,
+      recordingId: active.recordingId,
+      roomId,
+      title: active.fileName,
+    }).catch((error) => {
+      console.warn(
+        "[push] Recording-ready notification failed:",
+        error.message,
+      );
+    });
 
     console.log(`[Recording ${active.recordingId}] Ready`, { roomId, fileName: active.fileName, fileSize, durationSeconds, segments: active.segments.length });
     return { success: true, message: "Recording finalized.", data: { recordingId: active.recordingId, roomId, fileName: active.fileName, mimeType: "video/mp4" } };
