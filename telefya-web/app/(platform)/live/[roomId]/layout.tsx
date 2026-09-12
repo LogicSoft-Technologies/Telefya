@@ -43,7 +43,7 @@ export async function generateMetadata({
       description,
       images: [
         {
-          url: `${meetingPath}/opengraph-image`,
+          url: "/images/seo/telefya-meeting-og.png",
           width: 1200,
           height: 630,
           alt: "Telefya meeting invitation",
@@ -55,7 +55,7 @@ export async function generateMetadata({
       card: "summary_large_image",
       title,
       description,
-      images: [`${meetingPath}/opengraph-image`],
+      images: ["/images/seo/telefya-meeting-og.png"],
     },
   };
 }
