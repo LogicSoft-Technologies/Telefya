@@ -564,6 +564,29 @@ CREATE TABLE IF NOT EXISTS meeting_members (
 );
 `;
 
+const createMeetingGuestInvitationsTableQuery = `
+CREATE TABLE IF NOT EXISTS meeting_guest_invitations (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  meeting_id BIGINT NOT NULL,
+  email VARCHAR(255) NOT NULL,
+  member_role ENUM('speaker', 'attendee') NOT NULL DEFAULT 'attendee',
+  invited_by_user_id VARCHAR(50) NOT NULL,
+  delivery_status ENUM('sent', 'failed') NOT NULL DEFAULT 'sent',
+  invited_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    ON UPDATE CURRENT_TIMESTAMP,
+
+  UNIQUE KEY uq_meeting_guest_invitation (meeting_id, email),
+  INDEX idx_guest_invitation_email (email),
+  INDEX idx_guest_invitation_meeting (meeting_id),
+
+  CONSTRAINT fk_guest_invitation_meeting
+    FOREIGN KEY (meeting_id)
+    REFERENCES meeting_schedules(id)
+    ON DELETE CASCADE
+);
+`;
+
 const recordMeetingParticipants = `
 CREATE TABLE IF NOT EXISTS recording_participants (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -1144,6 +1167,18 @@ async function createMeetingMembersTable() {
   }
 }
 
+async function createMeetingGuestInvitationsTable() {
+  try {
+    await query(createMeetingGuestInvitationsTableQuery);
+    console.log("meeting_guest_invitations table created successfully");
+  } catch (error) {
+    console.error(
+      "Error creating meeting_guest_invitations table:",
+      error,
+    );
+  }
+}
+
 async function createRefreshTable() {
   try {
     await query(createRefreshTableQuery);
@@ -1496,6 +1531,7 @@ const creeateDBandTables = async () => {
       await createMeetingNotificationDeliveriesTable();
       await createSchedularTable();
       await createMeetingMembersTable();
+      await createMeetingGuestInvitationsTable();
       await createMeetingSpeakerStatusesTable();
       await createMeetingSpeakerMaterialsTable();
       await createRefreshTable();

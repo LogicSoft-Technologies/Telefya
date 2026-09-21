@@ -52,6 +52,7 @@ const {
   list_certificates_controller,
   generate_certificate_controller,
   get_billing_overview_controller,
+  get_mobile_meeting_inbox_controller,
 } = require("../../controllers/12-workspace_controller");
 
 const {
@@ -74,8 +75,10 @@ const {
 
 const {
   schedule_meeting_controller,
+  start_instant_meeting_controller,
   get_meeting_controller,
   delete_meeting_controller,
+  update_meeting_lifecycle_controller,
 } = loadMeetingControllers();
 
 const user_router = express.Router();
@@ -138,6 +141,24 @@ user_router.post(
   "/schedule-meeting",
   auth_middleware,
   schedule_meeting_controller,
+);
+
+user_router.post(
+  "/start-meeting",
+  auth_middleware,
+  start_instant_meeting_controller,
+);
+
+user_router.patch(
+  "/meetings/room/:roomId/lifecycle",
+  auth_middleware,
+  update_meeting_lifecycle_controller,
+);
+
+user_router.get(
+  "/mobile/meeting-inbox",
+  auth_middleware,
+  get_mobile_meeting_inbox_controller,
 );
 
 user_router.get(

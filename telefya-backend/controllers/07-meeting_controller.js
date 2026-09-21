@@ -1,8 +1,10 @@
 const { query } = require("../config/db");
 const {
   schedule_meeting_service,
+  start_instant_meeting_service,
   get_meeting_service,
   delete_meeting_service,
+  update_meeting_lifecycle_service,
 } = require("../services/08_meeting_service");
 const {
   getUserId,
@@ -156,8 +158,71 @@ const delete_meeting_controller = async (req, res) => {
   }
 };
 
+const start_instant_meeting_controller = async (req, res) => {
+  try {
+    const userId = getAuthenticatedUserId(req);
+
+    if (!userId) {
+      return unauthorized(res);
+    }
+
+    const meeting = await start_instant_meeting_service(query, {
+      ...req.body,
+      user_id: userId,
+    });
+
+    return res.status(201).json({
+      success: true,
+      error: false,
+      status: 201,
+      message: meeting.message,
+      data: meeting.data,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      error: true,
+      status: 400,
+      message: error?.message || "Unable to start the meeting.",
+    });
+  }
+};
+
+const update_meeting_lifecycle_controller = async (
+  req,
+  res,
+) => {
+  try {
+    const userId = getAuthenticatedUserId(req);
+
+    if (!userId) return unauthorized(res);
+
+    const result = await update_meeting_lifecycle_service(
+      query,
+      userId,
+      req.params.roomId,
+      req.body?.action,
+    );
+
+    return res.status(200).json({
+      ...result,
+      status: 200,
+      error: false,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      error: true,
+      status: 400,
+      message: error.message || "Unable to update meeting status.",
+    });
+  }
+};
+
 module.exports = {
   schedule_meeting_controller,
+  start_instant_meeting_controller,
   get_meeting_controller,
   delete_meeting_controller,
+  update_meeting_lifecycle_controller,
 };

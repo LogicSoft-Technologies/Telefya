@@ -416,6 +416,27 @@ const get_billing_overview_controller = async (req, res) => {
   }
 };
 
+const get_mobile_meeting_inbox_controller = async (
+  req,
+  res,
+) => {
+  try {
+    const userId = requireUser(req, res);
+
+    if (!userId) return;
+
+    return ok(
+      res,
+      await service.get_mobile_meeting_inbox_service(
+        query,
+        userId,
+      ),
+    );
+  } catch (error) {
+    return fail(res, error);
+  }
+};
+
 module.exports = {
   list_admin_users_controller,
   get_branding_controller,
@@ -434,4 +455,5 @@ module.exports = {
   list_certificates_controller,
   generate_certificate_controller,
   get_billing_overview_controller,
+  get_mobile_meeting_inbox_controller,
 };

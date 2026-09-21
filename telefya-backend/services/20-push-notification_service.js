@@ -287,7 +287,7 @@ async function notify_waiting_room_request({
     data: {
       type: "waiting_room_request",
       roomId,
-      url: `/meeting/${roomId}`,
+      url: `/meeting/${roomId}?host=true`,
     },
   });
 }

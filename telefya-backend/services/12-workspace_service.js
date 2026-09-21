@@ -2,6 +2,9 @@ const crypto = require("crypto");
 const {
   notify_meeting_invitation,
 } = require("./20-push-notification_service");
+const {
+  sendGuestMeetingInvitation,
+} = require("./meeting-invitation-email");
 
 function cleanString(value, fallback = "") {
   if (value === undefined || value === null) return fallback;
@@ -319,9 +322,84 @@ const invite_meeting_member_service = async (
   const invitedUser = users?.[0];
 
   if (!invitedUser) {
-    throw new Error(
-      "No Telefya account was found for that email address.",
+    const hostRows = await db_query(
+      `
+        SELECT first_name, last_name, email
+        FROM users
+        WHERE user_id = ?
+        LIMIT 1
+      `,
+      [hostUserId],
     );
+
+    const host = hostRows?.[0];
+    const hostName =
+      [host?.first_name, host?.last_name]
+        .filter(Boolean)
+        .join(" ") ||
+      host?.email ||
+      "A Telefya host";
+
+    await db_query(
+      `
+        INSERT INTO meeting_guest_invitations
+        (
+          meeting_id,
+          email,
+          member_role,
+          invited_by_user_id,
+          delivery_status,
+          invited_at
+        )
+        VALUES (?, ?, ?, ?, 'sent', NOW())
+        ON DUPLICATE KEY UPDATE
+          member_role = VALUES(member_role),
+          invited_by_user_id = VALUES(invited_by_user_id),
+          delivery_status = 'sent',
+          invited_at = NOW()
+      `,
+      [
+        meeting.id,
+        email,
+        memberRole,
+        hostUserId,
+      ],
+    );
+
+    try {
+      await sendGuestMeetingInvitation({
+        email,
+        hostName,
+        meetingUrl: meeting.meeting_url,
+        meetingTitle: meeting.des || "a Telefya meeting",
+        scheduledFor: meeting.scheduled_for,
+      });
+    } catch (error) {
+      await db_query(
+        `
+          UPDATE meeting_guest_invitations
+          SET delivery_status = 'failed'
+          WHERE meeting_id = ? AND email = ?
+        `,
+        [meeting.id, email],
+      );
+
+      throw new Error(
+        "The invitation could not be emailed. Please try again.",
+      );
+    }
+
+    return {
+      success: true,
+      message: "Guest invitation emailed successfully.",
+      data: {
+        meeting_id: meeting.id,
+        email,
+        member_role: memberRole,
+        delivery: "email",
+        requires_app_signup: true,
+      },
+    };
   }
 
   if (String(invitedUser.user_id) === String(hostUserId)) {
@@ -860,6 +938,114 @@ const get_billing_overview_service = async (db_query, userId) => {
   };
 };
 
+const get_mobile_meeting_inbox_service = async (
+  db_query,
+  userId,
+) => {
+  const rows = await db_query(
+    `
+      SELECT
+        m.id,
+        m.room_id,
+        m.meeting_url,
+        m.des,
+        m.shedular_user_id,
+        m.time_zone,
+        m.scheduled_for,
+        m.status,
+        m.started_at,
+        m.ended_at,
+        m.created_at,
+        m.updated_at,
+        'host' AS relationship,
+        NULL AS membership_id,
+        NULL AS member_role,
+        'accepted' AS member_status,
+        CONCAT_WS(' ', host.first_name, host.last_name) AS host_name,
+        (
+          SELECT COUNT(*)
+          FROM meeting_members participant
+          WHERE participant.meeting_id = m.id
+            AND participant.status IN ('invited', 'accepted')
+        ) + 1 AS participants_count
+      FROM meeting_schedules m
+      LEFT JOIN users host
+        ON host.user_id = m.shedular_user_id
+      WHERE m.shedular_user_id = ?
+        AND m.status IN ('upcoming', 'live')
+
+      UNION ALL
+
+      SELECT
+        m.id,
+        m.room_id,
+        m.meeting_url,
+        m.des,
+        m.shedular_user_id,
+        m.time_zone,
+        m.scheduled_for,
+        m.status,
+        m.started_at,
+        m.ended_at,
+        m.created_at,
+        m.updated_at,
+        'invitee' AS relationship,
+        mm.id AS membership_id,
+        mm.member_role,
+        mm.status AS member_status,
+        CONCAT_WS(' ', host.first_name, host.last_name) AS host_name,
+        (
+          SELECT COUNT(*)
+          FROM meeting_members participant
+          WHERE participant.meeting_id = m.id
+            AND participant.status IN ('invited', 'accepted')
+        ) + 1 AS participants_count
+      FROM meeting_members mm
+      INNER JOIN meeting_schedules m
+        ON m.id = mm.meeting_id
+      LEFT JOIN users host
+        ON host.user_id = m.shedular_user_id
+      WHERE mm.user_id = ?
+        AND mm.status IN ('invited', 'accepted')
+        AND m.status IN ('upcoming', 'live')
+    `,
+    [userId, userId],
+  );
+
+  const inbox = {
+    live: [],
+    upcoming: [],
+    invitations: [],
+  };
+
+  for (const meeting of rows || []) {
+    if (
+      meeting.relationship === "invitee" &&
+      meeting.member_status === "invited"
+    ) {
+      inbox.invitations.push(meeting);
+    } else if (meeting.status === "live") {
+      inbox.live.push(meeting);
+    } else {
+      inbox.upcoming.push(meeting);
+    }
+  }
+
+  const byDate = (first, second) =>
+    new Date(first.scheduled_for).getTime() -
+    new Date(second.scheduled_for).getTime();
+
+  inbox.live.sort(byDate);
+  inbox.upcoming.sort(byDate);
+  inbox.invitations.sort(byDate);
+
+  return {
+    success: true,
+    message: "Meeting inbox retrieved successfully.",
+    data: inbox,
+  };
+};
+
 module.exports = {
   list_admin_users_service,
   get_branding_service,
@@ -878,4 +1064,5 @@ module.exports = {
   list_certificates_service,
   generate_certificate_service,
   get_billing_overview_service,
+  get_mobile_meeting_inbox_service,
 };

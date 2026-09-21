@@ -221,8 +221,143 @@ const delete_meeting_service = async (
   };
 };
 
+const start_instant_meeting_service = async (
+  db_query,
+  payload,
+) => {
+  const userId = cleanString(payload.user_id);
+  const meetingUrl = cleanString(payload.path);
+  const meetingTimeZone = cleanString(payload.timeZone, "UTC");
+  const description = cleanString(
+    payload.des,
+    "Instant Telefya meeting",
+  );
+
+  if (!userId || !meetingUrl) {
+    throw new Error(
+      "Authenticated user and meeting link are required.",
+    );
+  }
+
+  const roomId = getRoomId(meetingUrl);
+
+  const existing = await db_query(
+    `
+      SELECT id, room_id, meeting_url
+      FROM meeting_schedules
+      WHERE room_id = ?
+      LIMIT 1
+    `,
+    [roomId],
+  );
+
+  if (existing?.[0]) {
+    return {
+      success: true,
+      message: "Meeting room is ready.",
+      data: existing[0],
+    };
+  }
+
+  const result = await db_query(
+    `
+      INSERT INTO meeting_schedules
+      (
+        meeting_url,
+        room_id,
+        time_zone,
+        scheduled_for,
+        shedular_user_id,
+        des,
+        status,
+        started_at
+      )
+      VALUES (?, ?, ?, NOW(), ?, ?, 'live', NOW())
+    `,
+    [
+      meetingUrl,
+      roomId,
+      meetingTimeZone,
+      userId,
+      description,
+    ],
+  );
+
+  return {
+    success: true,
+    message: "Instant meeting started.",
+    data: {
+      id: result.insertId,
+      room_id: roomId,
+      meeting_url: meetingUrl,
+      scheduled_for: new Date().toISOString(),
+      status: "live",
+    },
+  };
+};
+
+const update_meeting_lifecycle_service = async (
+  db_query,
+  user_id,
+  room_id,
+  action,
+) => {
+  const userId = cleanString(user_id);
+  const roomId = cleanString(room_id);
+
+  if (!userId || !roomId) {
+    throw new Error("Authenticated host and room ID are required.");
+  }
+
+  if (action !== "start" && action !== "end") {
+    throw new Error("Meeting action must be start or end.");
+  }
+
+  const result = await db_query(
+    action === "start"
+      ? `
+        UPDATE meeting_schedules
+        SET
+          status = 'live',
+          started_at = COALESCE(started_at, NOW()),
+          ended_at = NULL
+        WHERE room_id = ?
+          AND shedular_user_id = ?
+          AND status IN ('upcoming', 'live')
+      `
+      : `
+        UPDATE meeting_schedules
+        SET
+          status = 'ended',
+          ended_at = COALESCE(ended_at, NOW())
+        WHERE room_id = ?
+          AND shedular_user_id = ?
+          AND status = 'live'
+      `,
+    [roomId, userId],
+  );
+
+  if (!result.affectedRows && action === "start") {
+    throw new Error("Meeting not found or you are not its host.");
+  }
+
+  return {
+    success: true,
+    message:
+      action === "start"
+        ? "Meeting is live."
+        : "Meeting ended.",
+    data: {
+      room_id: roomId,
+      status: action === "start" ? "live" : "ended",
+    },
+  };
+};
+
 module.exports = {
   schedule_meeting_service,
+  start_instant_meeting_service,
   get_meeting_service,
   delete_meeting_service,
+  update_meeting_lifecycle_service,
 };
