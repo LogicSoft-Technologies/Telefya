@@ -2,6 +2,11 @@ import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
 
+<<<<<<< HEAD
+=======
+
+
+>>>>>>> 8bb7c77eb10272c2ed864dcb61895b5aec1f217a
 const config = {
   plugins: {
     "@tailwindcss/postcss": {},
