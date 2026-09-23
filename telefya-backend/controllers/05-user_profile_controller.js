@@ -39,6 +39,13 @@ function toPublicProfileImagePath(value) {
 
 async function get_user_profile_controller(req, res) {
   try {
+    res.set({
+      "Cache-Control": "private, no-store, no-cache, max-age=0, must-revalidate",
+      Pragma: "no-cache",
+      Expires: "0",
+      Vary: "Authorization",
+    });
+
     const userId = getAuthenticatedUserId(req);
 
     if (!userId) {
@@ -67,9 +74,9 @@ async function get_user_profile_controller(req, res) {
         created_at,
         updated_at
       FROM users
-      WHERE user_id = ? OR id = ?
+      WHERE user_id = ?
       LIMIT 1`,
-      [userId, userId],
+      [userId],
     );
 
     const user = users[0];

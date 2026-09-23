@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 const BACKEND_API_URL = process.env.BACKEND_API_URL;
 
 if (!BACKEND_API_URL) {
@@ -26,9 +29,11 @@ async function proxyRequest(request: NextRequest, context: RouteContext) {
 
   const contentType = request.headers.get("content-type");
   const authorization = request.headers.get("authorization");
+  const cookie = request.headers.get("cookie");
 
   if (contentType) headers.set("content-type", contentType);
   if (authorization) headers.set("authorization", authorization);
+  if (cookie) headers.set("cookie", cookie);
 
   const hasBody = !["GET", "HEAD"].includes(request.method);
 
@@ -50,6 +55,14 @@ async function proxyRequest(request: NextRequest, context: RouteContext) {
   if (setCookie) {
     responseHeaders.set("set-cookie", setCookie);
   }
+
+  responseHeaders.set(
+    "Cache-Control",
+    "private, no-store, no-cache, max-age=0, must-revalidate",
+  );
+  responseHeaders.set("Pragma", "no-cache");
+  responseHeaders.set("Expires", "0");
+  responseHeaders.set("Vary", "Authorization, Cookie");
 
   const body = await backendResponse.arrayBuffer();
 

@@ -1,7 +1,7 @@
 const express = require("express");
 
 const get_user_profile_controller = require(
-  "../../controllers/05-update_user_profile_controller",
+  "../../controllers/05-user_profile_controller",
 );
 const update_user_profile_controller = require(
   "../../controllers/05-update_user_profile_controller",
@@ -11,9 +11,7 @@ const user_logout_controller = require(
 );
 const auth_middleware = require("../../middleware/auth_middleware");
 
-const get_mobile_profile_controller = require(
-  "../../controllers/05-user_profile_controller",
-);
+const get_mobile_profile_controller = get_user_profile_controller;
 
 const loadMeetingControllers = () => {
   try {

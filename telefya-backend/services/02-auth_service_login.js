@@ -52,8 +52,11 @@ const auth_service_login = async (data, dependencyObject) => {
     
     // 2. Fetch user from database
     const foundUsers = await query(
-      'SELECT id, email, user_id, password, first_name, last_name, role FROM users WHERE email = ?',
-      [email]
+      `SELECT id, email, user_id, password, first_name, last_name, role, is_verified
+       FROM users
+       WHERE email = ?
+       LIMIT 1`,
+      [email],
     );
     const foundUser = foundUsers[0]; // Assuming single result
 
@@ -72,6 +75,22 @@ const auth_service_login = async (data, dependencyObject) => {
         status: 401,
       });
     }
+
+    if (!foundUser.is_verified) {
+      return responseObject(false, true, {
+        message: "Please verify your email before signing in.",
+        status: 403,
+      });
+    }
+
+    const user = {
+      id: foundUser.user_id,
+      user_id: foundUser.user_id,
+      email: foundUser.email,
+      first_name: foundUser.first_name,
+      last_name: foundUser.last_name,
+      role: foundUser.role,
+    };
     
     /**
      * if access to is expired and jwt.verified is false,
@@ -84,13 +103,14 @@ const auth_service_login = async (data, dependencyObject) => {
     // 4. Generate JWTs
     const accessToken = jwt.sign(
       {
-          user: foundUser.user_id,
-          name: foundUser.first_name+' '+foundUser.last_name,
-          roles: foundUser.role,
+        sub: foundUser.user_id,
+        user: foundUser.user_id,
+        email: foundUser.email,
+        name: `${foundUser.first_name} ${foundUser.last_name}`,
+        roles: foundUser.role,
       },
       accessTokenSecret,
-
-      { expiresIn: accessTokenExpiresIn }
+      { expiresIn: accessTokenExpiresIn },
     );
 
     const newRefreshToken = jwt.sign(
@@ -179,6 +199,7 @@ const auth_service_login = async (data, dependencyObject) => {
       message: 'User logged in successfully.',
       status: 200,
       accessToken,
+      user,
       id: foundUser.user_id,
       name: foundUser.first_name+' '+foundUser.last_name,
    

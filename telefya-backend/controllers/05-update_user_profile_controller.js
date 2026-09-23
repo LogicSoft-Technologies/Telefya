@@ -84,9 +84,9 @@ async function getUserById(userId) {
       profile_image,
       created_at
     FROM users
-    WHERE user_id = ? OR id = ?
+    WHERE user_id = ?
     LIMIT 1`,
-    [userId, userId],
+    [userId],
   );
 
   return normalizeUser(rows[0] || null);
@@ -94,6 +94,13 @@ async function getUserById(userId) {
 
 const update_user_profile_controller = async (req, res) => {
   try {
+    res.set({
+      "Cache-Control": "private, no-store, no-cache, max-age=0, must-revalidate",
+      Pragma: "no-cache",
+      Expires: "0",
+      Vary: "Authorization",
+    });
+
     const userId = getAuthenticatedUserId(req);
 
     if (!userId) {
@@ -168,8 +175,8 @@ const update_user_profile_controller = async (req, res) => {
     const params = entries.map(([, fieldValue]) => fieldValue);
 
     await query(
-      `UPDATE users SET ${setClause} WHERE user_id = ? OR id = ?`,
-      [...params, userId, userId],
+      `UPDATE users SET ${setClause} WHERE user_id = ?`,
+      [...params, userId],
     );
 
     const updatedUser = await getUserById(userId);
