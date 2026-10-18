@@ -3,7 +3,8 @@ const {
   notify_meeting_invitation,
 } = require("./20-push-notification_service");
 const {
-  sendGuestMeetingInvitation,
+  sendMeetingInvitationEmail,
+  sendMeetingCancellationEmail,
 } = require("./meeting-invitation-email");
 
 function cleanString(value, fallback = "") {
@@ -21,6 +22,28 @@ function isValidMemberRole(value) {
 
 function isActiveMemberStatus(status) {
   return status === "invited" || status === "accepted";
+}
+
+async function getHostDetails(db_query, hostUserId) {
+  const rows = await db_query(
+    `
+      SELECT first_name, last_name, email
+      FROM users
+      WHERE user_id = ?
+      LIMIT 1
+    `,
+    [hostUserId],
+  );
+
+  const host = rows?.[0] || {};
+
+  return {
+    email: host.email || "",
+    name:
+      [host.first_name, host.last_name].filter(Boolean).join(" ") ||
+      host.email ||
+      "A Telefya host",
+  };
 }
 
 async function getOwnedMeeting(db_query, meetingId, hostUserId) {
@@ -322,23 +345,8 @@ const invite_meeting_member_service = async (
   const invitedUser = users?.[0];
 
   if (!invitedUser) {
-    const hostRows = await db_query(
-      `
-        SELECT first_name, last_name, email
-        FROM users
-        WHERE user_id = ?
-        LIMIT 1
-      `,
-      [hostUserId],
-    );
-
-    const host = hostRows?.[0];
-    const hostName =
-      [host?.first_name, host?.last_name]
-        .filter(Boolean)
-        .join(" ") ||
-      host?.email ||
-      "A Telefya host";
+    const host = await getHostDetails(db_query, hostUserId);
+    const hostName = host.name;
 
     await db_query(
       `
@@ -367,7 +375,8 @@ const invite_meeting_member_service = async (
     );
 
     try {
-      await sendGuestMeetingInvitation({
+      await sendMeetingInvitationEmail({
+        meetingId: meeting.id,
         email,
         hostName,
         meetingUrl: meeting.meeting_url,
@@ -434,15 +443,38 @@ const invite_meeting_member_service = async (
     ],
   );
 
-  void notify_meeting_invitation({
-    meeting,
-    invitedUserId: invitedUser.user_id,
-    memberRole,
-  }).catch((error) => {
-    console.warn(
-      "[push] Unable to send meeting invitation:",
-      error.message,
+  const host = await getHostDetails(db_query, hostUserId);
+
+  const deliveries = [
+    notify_meeting_invitation({
+      meeting,
+      invitedUserId: invitedUser.user_id,
+      memberRole,
+    }),
+  ];
+
+  if (meeting.scheduled_for && meeting.status === "upcoming") {
+    deliveries.push(
+      sendMeetingInvitationEmail({
+        meetingId: meeting.id,
+        email: invitedUser.email,
+        hostName: host.name,
+        meetingUrl: meeting.meeting_url,
+        meetingTitle: meeting.des || "a Telefya meeting",
+        scheduledFor: meeting.scheduled_for,
+      }),
     );
+  }
+
+  void Promise.allSettled(deliveries).then((results) => {
+    results.forEach((result) => {
+      if (result.status === "rejected") {
+        console.warn(
+          "[meeting-invitation] Delivery failed:",
+          result.reason?.message || result.reason,
+        );
+      }
+    });
   });
 
   return {
@@ -474,6 +506,21 @@ const remove_meeting_member_service = async (
     throw new Error("Meeting not found or access denied.");
   }
 
+  const memberRows = await db_query(
+    `
+      SELECT u.email
+      FROM meeting_members mm
+      INNER JOIN users u
+        ON u.user_id = mm.user_id
+      WHERE mm.id = ?
+        AND mm.meeting_id = ?
+        AND mm.status <> 'removed'
+      LIMIT 1
+    `,
+    [memberId, meeting.id],
+  );
+  const memberEmail = memberRows?.[0]?.email;
+
   const result = await db_query(
     `
       UPDATE meeting_members
@@ -488,6 +535,24 @@ const remove_meeting_member_service = async (
 
   if (!result.affectedRows) {
     throw new Error("Meeting member was not found.");
+  }
+
+  if (memberEmail && meeting.scheduled_for && meeting.status === "upcoming") {
+    const host = await getHostDetails(db_query, hostUserId);
+
+    void sendMeetingCancellationEmail({
+      meetingId: meeting.id,
+      email: memberEmail,
+      hostName: host.name,
+      meetingUrl: meeting.meeting_url,
+      meetingTitle: meeting.des || "a Telefya meeting",
+      scheduledFor: meeting.scheduled_for,
+    }).catch((error) => {
+      console.warn(
+        "[meeting-cancellation] Delivery failed:",
+        error.message || error,
+      );
+    });
   }
 
   return {
@@ -513,6 +578,32 @@ const respond_to_meeting_invite_service = async (
     throw new Error("Choose accepted or declined.");
   }
 
+  const meetingRows =
+    status === "declined"
+      ? await db_query(
+          `
+            SELECT
+              m.id,
+              m.meeting_url,
+              m.des,
+              m.shedular_user_id,
+              m.scheduled_for,
+              m.status,
+              u.email
+            FROM meeting_members mm
+            INNER JOIN meeting_schedules m
+              ON m.id = mm.meeting_id
+            INNER JOIN users u
+              ON u.user_id = mm.user_id
+            WHERE mm.id = ?
+              AND mm.user_id = ?
+              AND mm.status = 'invited'
+            LIMIT 1
+          `,
+          [memberId, userId],
+        )
+      : [];
+
   const result = await db_query(
     `
       UPDATE meeting_members
@@ -527,6 +618,25 @@ const respond_to_meeting_invite_service = async (
 
   if (!result.affectedRows) {
     throw new Error("Invitation not found or already handled.");
+  }
+
+  const meeting = meetingRows?.[0];
+  if (meeting?.email && meeting.scheduled_for && meeting.status === "upcoming") {
+    const host = await getHostDetails(db_query, meeting.shedular_user_id);
+
+    void sendMeetingCancellationEmail({
+      meetingId: meeting.id,
+      email: meeting.email,
+      hostName: host.name,
+      meetingUrl: meeting.meeting_url,
+      meetingTitle: meeting.des || "a Telefya meeting",
+      scheduledFor: meeting.scheduled_for,
+    }).catch((error) => {
+      console.warn(
+        "[meeting-cancellation] Delivery failed:",
+        error.message || error,
+      );
+    });
   }
 
   return {

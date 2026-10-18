@@ -1,5 +1,18 @@
-import { CalendarDays, Copy, ExternalLink, Trash2 } from "lucide-react";
+import {
+  CalendarDays,
+  CalendarPlus,
+  Copy,
+  ExternalLink,
+  Trash2,
+} from "lucide-react";
+
+import { createGoogleCalendarUrl } from "@/lib/calendar";
 import type { ScheduledMeeting } from "@/types/meeting";
+
+type EventCardMeeting = ScheduledMeeting & {
+  des?: string;
+  scheduled_for?: string;
+};
 
 function getRoomId(meetingUrl: string) {
   try {
@@ -23,15 +36,32 @@ export function EventCard({
   onSelect,
   onDelete,
 }: {
-  meeting: ScheduledMeeting;
+  meeting: EventCardMeeting;
   selected: boolean;
   onSelect: (selected: boolean) => void;
   onDelete: () => void;
 }) {
   const roomId = getRoomId(meeting.meeting_url);
+  const scheduledAt = meeting.scheduled_for ?? meeting.created_at;
 
   async function copyLink() {
     await navigator.clipboard.writeText(meeting.meeting_url);
+  }
+
+  function addToGoogleCalendar() {
+    try {
+      const calendarUrl = createGoogleCalendarUrl({
+        title: meeting.des || "Telefya meeting",
+        startsAt: scheduledAt,
+        meetingUrl: meeting.meeting_url,
+      });
+
+      window.open(calendarUrl, "_blank", "noopener,noreferrer");
+    } catch {
+      window.alert(
+        "This meeting does not have a valid scheduled time.",
+      );
+    }
   }
 
   return (
@@ -52,15 +82,16 @@ export function EventCard({
 
         <button
           onClick={onDelete}
-          className="grid h-10 w-10 place-items-center rounded-xl text-navy-300 hover:bg-red-50 hover:text-red-600"
-          title="Delete meeting"
+          className="grid h-10 w-10 place-items-center rounded-xl text-navy-300 transition hover:bg-red-50 hover:text-red-600"
+          title="Cancel meeting"
+          aria-label="Cancel meeting"
         >
           <Trash2 size={18} />
         </button>
       </div>
 
       <h3 className="mt-5 text-lg font-black text-navy-900">
-        Scheduled meeting
+        {meeting.des || "Scheduled meeting"}
       </h3>
 
       <p className="mt-2 line-clamp-2 text-sm font-semibold leading-6 text-navy-500">
@@ -69,31 +100,40 @@ export function EventCard({
 
       <div className="mt-5 grid gap-2 text-sm text-navy-500">
         <p>
-          <span className="font-black text-navy-900">Created:</span>{" "}
-          {formatDate(meeting.created_at)}
+          <span className="font-black text-navy-900">When:</span>{" "}
+          {scheduledAt ? formatDate(scheduledAt) : "Time to be confirmed"}
         </p>
+
         <p>
           <span className="font-black text-navy-900">Timezone:</span>{" "}
           {meeting.time_zone}
         </p>
       </div>
 
-      <div className="mt-5 flex gap-3">
+      <div className="mt-5 grid grid-cols-3 gap-2">
         <button
           onClick={copyLink}
-          className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl border border-border px-4 py-3 text-sm font-black text-navy-900 hover:border-telefya-blue hover:text-telefya-blue"
+          className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-border px-3 py-3 text-sm font-black text-navy-900 transition hover:border-telefya-blue hover:text-telefya-blue"
         >
-          <Copy size={17} />
+          <Copy size={16} />
           Copy
+        </button>
+
+        <button
+          onClick={addToGoogleCalendar}
+          className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-border px-3 py-3 text-sm font-black text-navy-900 transition hover:border-telefya-blue hover:text-telefya-blue"
+        >
+          <CalendarPlus size={16} />
+          Calendar
         </button>
 
         <a
           href={meeting.meeting_url}
           target="_blank"
           rel="noreferrer"
-          className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-telefya-blue px-4 py-3 text-sm font-black text-white hover:bg-telefya-violet"
+          className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-telefya-blue px-3 py-3 text-sm font-black text-white transition hover:bg-telefya-violet"
         >
-          <ExternalLink size={17} />
+          <ExternalLink size={16} />
           Join
         </a>
       </div>

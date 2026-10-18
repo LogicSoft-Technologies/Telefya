@@ -1,3 +1,7 @@
+const {
+  sendMeetingCancellationEmail,
+} = require("./meeting-invitation-email");
+
 const cleanString = (value, fallback = "") => {
   if (value === undefined || value === null) return fallback;
   return String(value).trim();
@@ -182,6 +186,59 @@ const normalizeMeetingIds = (payload) => {
     .filter((id) => Number.isInteger(id) && id > 0);
 };
 
+async function sendMeetingCancellationNotices(db_query, meetings) {
+  for (const meeting of meetings) {
+    if (!meeting.scheduled_for || meeting.status !== "upcoming") {
+      continue;
+    }
+
+    const recipients = await db_query(
+      `
+        SELECT DISTINCT email
+        FROM (
+          SELECT u.email
+          FROM meeting_members mm
+          INNER JOIN users u ON u.user_id = mm.user_id
+          WHERE mm.meeting_id = ?
+            AND mm.status IN ('invited', 'accepted')
+
+          UNION
+
+          SELECT email
+          FROM meeting_guest_invitations
+          WHERE meeting_id = ?
+            AND delivery_status = 'sent'
+        ) recipients
+        WHERE email IS NOT NULL
+          AND TRIM(email) <> ''
+      `,
+      [meeting.id, meeting.id],
+    );
+
+    void Promise.allSettled(
+      recipients.map(({ email }) =>
+        sendMeetingCancellationEmail({
+          meetingId: meeting.id,
+          email,
+          hostName: meeting.host_name || "The host",
+          meetingUrl: meeting.meeting_url,
+          meetingTitle: meeting.des || "Telefya meeting",
+          scheduledFor: meeting.scheduled_for,
+        }),
+      ),
+    ).then((results) => {
+      results.forEach((result) => {
+        if (result.status === "rejected") {
+          console.warn(
+            "[meeting-cancellation] Email delivery failed:",
+            result.reason?.message || result.reason,
+          );
+        }
+      });
+    });
+  }
+}
+
 const delete_meeting_service = async (
   db_query,
   user_id,
@@ -202,6 +259,23 @@ const delete_meeting_service = async (
     };
   }
 
+  const meetingsToCancel = await db_query(
+    `
+      SELECT
+        m.id,
+        m.meeting_url,
+        m.des,
+        m.scheduled_for,
+        m.status,
+        CONCAT_WS(' ', u.first_name, u.last_name) AS host_name
+      FROM meeting_schedules m
+      LEFT JOIN users u ON u.user_id = m.shedular_user_id
+      WHERE m.id IN (${ids.map(() => "?").join(", ")})
+        AND m.shedular_user_id = ?
+    `,
+    [...ids, userId],
+  );
+
   const result = await db_query(
     `
       DELETE FROM meeting_schedules
@@ -210,6 +284,13 @@ const delete_meeting_service = async (
     `,
     [...ids, userId],
   );
+
+  if (result.affectedRows > 0) {
+    void sendMeetingCancellationNotices(
+      db_query,
+      meetingsToCancel || [],
+    );
+  }
 
   return {
     success: result.affectedRows > 0,
