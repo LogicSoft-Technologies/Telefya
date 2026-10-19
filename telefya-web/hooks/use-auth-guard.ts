@@ -1,7 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import {
+  usePathname,
+  useRouter,
+  useSearchParams,
+} from "next/navigation";
 
 import { getUserProfile } from "@/lib/api/users";
 import {
@@ -17,17 +21,13 @@ import type { AuthUser } from "@/lib/api/auth";
 
 function isAuthError(error: unknown) {
   const message =
-    error instanceof Error
-      ? error.message.toLowerCase()
-      : "";
+    error instanceof Error ? error.message.toLowerCase() : "";
 
   const status =
     typeof error === "object" &&
     error &&
     "status" in error
-      ? Number(
-          (error as { status?: number }).status,
-        )
+      ? Number((error as { status?: number }).status)
       : 0;
 
   return (
@@ -42,10 +42,19 @@ function isAuthError(error: unknown) {
 
 export function useAuthGuard() {
   const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
 
-  const [user, setUser] =
-    useState<AuthUser | null>(null);
+  const search = searchParams.toString();
+  const requestedPath = search
+    ? `${pathname}?${search}`
+    : pathname;
 
+  const loginPath = `/login?next=${encodeURIComponent(
+    requestedPath,
+  )}`;
+
+  const [user, setUser] = useState<AuthUser | null>(null);
   const [checking, setChecking] = useState(true);
 
   useEffect(() => {
@@ -62,7 +71,7 @@ export function useAuthGuard() {
           setChecking(false);
         }
 
-        router.replace("/login");
+        router.replace(loginPath);
         return;
       }
 
@@ -77,13 +86,8 @@ export function useAuthGuard() {
 
         if (!mounted) return;
 
-        // saveUser safely merges only when the identity matches.
-        // It replaces the account entirely when a different user logs in.
         saveUser(profile);
-
-        const currentUser = getSavedUser();
-
-        setUser(currentUser);
+        setUser(getSavedUser());
       } catch (error) {
         if (isAuthError(error)) {
           clearAccessToken();
@@ -94,7 +98,7 @@ export function useAuthGuard() {
             setChecking(false);
           }
 
-          router.replace("/login");
+          router.replace(loginPath);
           return;
         }
 
@@ -111,37 +115,23 @@ export function useAuthGuard() {
     void checkSession();
 
     function handleAuthChange() {
-      if (!mounted) return;
-      setUser(getSavedUser());
+      if (mounted) {
+        setUser(getSavedUser());
+      }
     }
 
-    window.addEventListener(
-      "telefya-auth-change",
-      handleAuthChange,
-    );
-
-    window.addEventListener(
-      "storage",
-      handleAuthChange,
-    );
+    window.addEventListener("telefya-auth-change", handleAuthChange);
+    window.addEventListener("storage", handleAuthChange);
 
     return () => {
       mounted = false;
-
       window.removeEventListener(
         "telefya-auth-change",
         handleAuthChange,
       );
-
-      window.removeEventListener(
-        "storage",
-        handleAuthChange,
-      );
+      window.removeEventListener("storage", handleAuthChange);
     };
-  }, [router]);
+  }, [loginPath, router]);
 
-  return {
-    user,
-    checking,
-  };
+  return { user, checking };
 }

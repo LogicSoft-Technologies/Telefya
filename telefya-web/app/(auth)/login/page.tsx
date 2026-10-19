@@ -2,7 +2,10 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import {
+  useRouter,
+  useSearchParams,
+} from "next/navigation";
 import { Eye, EyeOff, Loader2, LockKeyhole, Mail, ShieldCheck } from "lucide-react";
 import { useState } from "react";
 import { loginUser } from "@/lib/api/auth";
@@ -12,8 +15,26 @@ import { MeetingPreview } from "@/components/auth/MeetingPreview";
 import { saveAccessToken, saveRefreshToken } from "@/lib/auth/tokens";
 
 
+function getSafeReturnTo(value: string | null) {
+  if (!value) return "/lobby";
+
+  try {
+    const url = new URL(value, window.location.origin);
+
+    if (url.origin !== window.location.origin) {
+      return "/lobby";
+    }
+
+    return `${url.pathname}${url.search}${url.hash}`;
+  } catch {
+    return "/lobby";
+  }
+}
+
 export default function Login() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const returnTo = getSafeReturnTo(searchParams.get("next"));
 
   const [showPassword, setShowPassword] = useState(false);
   const [email, setEmail] = useState("");
@@ -70,7 +91,7 @@ async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     }
 
     window.dispatchEvent(new Event("telefya-auth-change"));
-    router.replace("/lobby");
+    router.replace(returnTo);
   } catch (err) {
     setError(err instanceof Error ? err.message : "Unable to sign in.");
   } finally {

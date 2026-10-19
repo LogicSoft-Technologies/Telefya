@@ -63,7 +63,19 @@ export function middleware(request: NextRequest) {
     request.cookies.get("token")?.value;
 
   if (isAuthRoute && cookieToken) {
-    return NextResponse.redirect(new URL("/lobby", request.url));
+    const next = request.nextUrl.searchParams.get("next");
+
+    const destination =
+      next &&
+      next.startsWith("/") &&
+      !next.startsWith("//") &&
+      !next.startsWith("/\\")
+        ? next
+        : "/lobby";
+
+    return NextResponse.redirect(
+      new URL(destination, request.url),
+    );
   }
 
   const response = NextResponse.next();
