@@ -1,4 +1,4 @@
-﻿const { query } = require("../config/db");
+const { query } = require("../config/db");
 
 const {
   getCalendarEventsService,
@@ -220,4 +220,3 @@ module.exports = {
   cancel_calendar_event_controller,
   get_calendar_event_audit_controller,
 };
-

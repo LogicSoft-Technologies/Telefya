@@ -1,4 +1,4 @@
-﻿const { query } = require("../config/db");
+const { query } = require("../config/db");
 const service = require("../services/12-workspace_service");
 const {
   getRequestIp,
@@ -488,4 +488,3 @@ module.exports = {
   get_billing_overview_controller,
   get_mobile_meeting_inbox_controller,
 };
-

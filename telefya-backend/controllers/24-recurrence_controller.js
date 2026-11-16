@@ -1,4 +1,4 @@
-﻿const { query } = require("../config/db");
+const { query } = require("../config/db");
 
 const {
   saveMeetingRecurrenceService,
@@ -184,4 +184,3 @@ module.exports = {
   get_meeting_recurrence_controller,
   delete_meeting_recurrence_controller,
 };
-

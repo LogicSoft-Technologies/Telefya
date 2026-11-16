@@ -5,3 +5,5 @@ temp_interactive_push.bat
 # Local secrets — never commit
 **/.env
 **/.env.local
+
+telifier-app/

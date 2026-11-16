@@ -1,4 +1,4 @@
-﻿const {
+const {
   query,
   withTransaction,
 } = require("../config/db");
@@ -135,4 +135,3 @@ module.exports = {
   get_public_booking_slots_controller,
   create_public_booking_controller,
 };
-

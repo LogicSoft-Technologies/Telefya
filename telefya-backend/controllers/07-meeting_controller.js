@@ -1,4 +1,4 @@
-﻿const { query } = require("../config/db");
+const { query } = require("../config/db");
 const {
   schedule_meeting_service,
   start_instant_meeting_service,
@@ -257,4 +257,3 @@ module.exports = {
   delete_meeting_controller,
   update_meeting_lifecycle_controller,
 };
-

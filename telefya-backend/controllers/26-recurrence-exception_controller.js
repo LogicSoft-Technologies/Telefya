@@ -1,4 +1,4 @@
-﻿const { query } = require("../config/db");
+const { query } = require("../config/db");
 
 const {
   saveRecurrenceExceptionService,
@@ -152,4 +152,3 @@ module.exports = {
   save_recurrence_exception_controller,
   delete_recurrence_exception_controller,
 };
-
