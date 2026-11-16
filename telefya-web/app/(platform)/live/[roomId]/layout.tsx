@@ -1,4 +1,9 @@
 import type { Metadata } from "next";
+
+import {
+  formatMeetingTime,
+  getPublicMeetingPreview,
+} from "@/lib/server/meeting-preview";
 import { siteName } from "@/lib/site";
 
 type MeetingLayoutProps = {
@@ -8,15 +13,36 @@ type MeetingLayoutProps = {
   }>;
 };
 
+export const revalidate = 60;
+
 export async function generateMetadata({
   params,
 }: MeetingLayoutProps): Promise<Metadata> {
   const { roomId } = await params;
-  const meetingPath = `/live/${encodeURIComponent(roomId)}`;
+  const safeRoomId = encodeURIComponent(roomId);
+  const meetingPath = `/live/${safeRoomId}`;
+  const preview = await getPublicMeetingPreview(roomId);
 
-  const title = "Join a Telefya meeting";
+  const title =
+    preview?.title
+      ? `${preview.title} | Telefya meeting`
+      : "Join a Telefya meeting";
+
+  const meetingTime = preview
+    ? formatMeetingTime(
+        preview.scheduledFor,
+        preview.timeZone,
+      )
+    : "";
+
   const description =
-    "You have been invited to join a secure Telefya video meeting. Open this link to join the meeting.";
+    preview?.status === "cancelled"
+      ? "This Telefya meeting has been cancelled."
+      : preview?.status === "live"
+        ? `${preview.title} is live now. Join the secure Telefya meeting.`
+        : preview
+          ? `${preview.title} is scheduled for ${meetingTime}. Join securely with Telefya.`
+          : "You have been invited to join a secure Telefya video meeting.";
 
   return {
     title,
@@ -43,10 +69,12 @@ export async function generateMetadata({
       description,
       images: [
         {
-          url: "/images/seo/telefya-meeting-og.png",
+          url: `${meetingPath}/opengraph-image`,
           width: 1200,
           height: 630,
-          alt: "Telefya meeting invitation",
+          alt: preview
+            ? `${preview.title} — Telefya meeting`
+            : "Telefya meeting invitation",
         },
       ],
     },
@@ -55,7 +83,7 @@ export async function generateMetadata({
       card: "summary_large_image",
       title,
       description,
-      images: ["/images/seo/telefya-meeting-og.png"],
+      images: [`${meetingPath}/opengraph-image`],
     },
   };
 }

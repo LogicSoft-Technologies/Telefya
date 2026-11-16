@@ -362,7 +362,7 @@ export default function LiveRoomPage() {
 
   const [checkingHostAccess, setCheckingHostAccess] = useState(true);
   const [copied, setCopied] = useState(false);
-  const [chatOpen, setChatOpen] = useState(true);
+  const [chatOpen, setChatOpen] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [participantsOpen, setParticipantsOpen] = useState(false);
@@ -550,7 +550,7 @@ export default function LiveRoomPage() {
       setIsHost(saved.role === "host");
       setStarted(true);
       setExpanded(true);
-      setChatOpen(true);
+      setChatOpen(false);
     } catch {
       clearMeetingSession();
     }
@@ -993,7 +993,7 @@ export default function LiveRoomPage() {
     setIsHost(true);
     setStarted(true);
     setExpanded(true);
-    setChatOpen(true);
+    setChatOpen(false);
   }
 
   function joinAsParticipant() {
@@ -1002,7 +1002,7 @@ export default function LiveRoomPage() {
     setIsHost(false);
     setStarted(true);
     setExpanded(true);
-    setChatOpen(true);
+    setChatOpen(false);
   }
 
   async function chooseBackground(background: VirtualBackground, id: string) {

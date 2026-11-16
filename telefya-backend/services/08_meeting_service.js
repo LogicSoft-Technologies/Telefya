@@ -25,6 +25,42 @@ function parseScheduledDate(value) {
   return date;
 }
 
+function normalizeDuration(value, fallback = 60) {
+  if (value === undefined || value === null || value === "") {
+    return fallback;
+  }
+
+  const duration = Number(value);
+
+  if (
+    !Number.isInteger(duration) ||
+    duration < 15 ||
+    duration > 1440
+  ) {
+    throw new Error(
+      "Meeting duration must be between 15 and 1440 minutes.",
+    );
+  }
+
+  return duration;
+}
+
+function normalizeIdempotencyKey(value) {
+  const key = cleanString(value);
+
+  if (!key) return null;
+
+  if (
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      key,
+    )
+  ) {
+    throw new Error("Idempotency key must be a valid UUID.");
+  }
+
+  return key.toLowerCase();
+}
+
 function getRoomId(meetingUrl) {
   const rawUrl = cleanString(meetingUrl);
 
@@ -57,12 +93,24 @@ function getRoomId(meetingUrl) {
 }
 
 const schedule_meeting_service = async (db_query, payload) => {
-  const { date, timeZone, path, user_id, des } = payload;
+  const {
+    date,
+    timeZone,
+    path,
+    user_id,
+    des,
+    durationMinutes,
+    idempotencyKey,
+  } = payload;
 
   const userId = cleanString(user_id);
   const meetingUrl = cleanString(path);
   const meetingTimeZone = cleanString(timeZone);
   const description = cleanString(des, "Telefya meeting");
+  const durationMinutesValue = normalizeDuration(durationMinutes);
+  const requestIdempotencyKey = normalizeIdempotencyKey(
+    idempotencyKey,
+  );
 
   if (!userId) {
     throw new Error("Authenticated user is required.");
@@ -77,14 +125,49 @@ const schedule_meeting_service = async (db_query, payload) => {
   const scheduledDate = parseScheduledDate(date);
   const roomId = getRoomId(meetingUrl);
 
+  if (requestIdempotencyKey) {
+    const existing = await db_query(
+      `
+        SELECT
+          id,
+          meeting_url,
+          room_id,
+          des,
+          time_zone,
+          scheduled_for,
+          duration_minutes,
+          status,
+          calendar_sequence
+        FROM meeting_schedules
+        WHERE shedular_user_id = ?
+          AND idempotency_key = ?
+        LIMIT 1
+      `,
+      [userId, requestIdempotencyKey],
+    );
+
+    if (existing?.[0]) {
+      return {
+        success: true,
+        error: false,
+        message: "Meeting already scheduled.",
+        data: existing[0],
+      };
+    }
+  }
+
   const meeting = {
     meeting_url: meetingUrl,
     room_id: roomId,
     time_zone: meetingTimeZone,
     scheduled_for: toMysqlDateTime(scheduledDate),
+    duration_minutes: durationMinutesValue,
     shedular_user_id: userId,
     des: description,
     status: "upcoming",
+    calendar_sequence: 0,
+    idempotency_key: requestIdempotencyKey,
+    updated_by_user_id: userId,
     started_at: null,
     ended_at: null,
   };
@@ -97,20 +180,28 @@ const schedule_meeting_service = async (db_query, payload) => {
         room_id,
         time_zone,
         scheduled_for,
+        duration_minutes,
         shedular_user_id,
         des,
-        status
+        status,
+        calendar_sequence,
+        idempotency_key,
+        updated_by_user_id
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
     [
       meeting.meeting_url,
       meeting.room_id,
       meeting.time_zone,
       meeting.scheduled_for,
+      meeting.duration_minutes,
       meeting.shedular_user_id,
       meeting.des,
       meeting.status,
+      meeting.calendar_sequence,
+      meeting.idempotency_key,
+      meeting.updated_by_user_id,
     ],
   );
 

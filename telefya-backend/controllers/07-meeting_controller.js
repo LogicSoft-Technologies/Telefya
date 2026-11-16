@@ -1,4 +1,4 @@
-const { query } = require("../config/db");
+﻿const { query } = require("../config/db");
 const {
   schedule_meeting_service,
   start_instant_meeting_service,
@@ -10,6 +10,16 @@ const {
   getUserId,
   get_current_subscription_service,
 } = require("../services/14-billing_service");
+const {
+  getRequestIp,
+  recordMeetingAudit,
+} = require("../services/30-meeting-audit_service");
+const {
+  publishCalendarChange,
+} = require("../services/31-calendar-realtime_service");
+const {
+  queueGoogleMeetingSync,
+} = require("../services/34-google-calendar-sync_service");
 
 const getAuthenticatedUserId = (req) => {
   const embeddedUser = req.user?.user;
@@ -81,6 +91,27 @@ const schedule_meeting_controller = async (req, res) => {
       max_participants: subscription?.limits?.max_participants,
       max_meeting_minutes: subscription?.limits?.max_meeting_minutes,
       recording_enabled: subscription?.limits?.recording_enabled,
+    });
+
+    publishCalendarChange(query, {
+      meetingId: scheduled.data?.id,
+      eventType: "meeting_scheduled",
+    });
+    queueGoogleMeetingSync(query, scheduled.data?.id);
+
+    recordMeetingAudit(query, {
+      meetingId: scheduled.data?.id,
+      actorUserId: userId,
+      actorType: "host",
+      eventType: "MEETING_SCHEDULED",
+      ipAddress: getRequestIp(req),
+      metadata: {
+        title: scheduled.data?.des,
+        scheduledFor: scheduled.data?.scheduled_for,
+        durationMinutes: scheduled.data?.duration_minutes,
+        timeZone: scheduled.data?.time_zone,
+        source: "host_schedule",
+      },
     });
 
     return res.status(200).json({
@@ -226,3 +257,4 @@ module.exports = {
   delete_meeting_controller,
   update_meeting_lifecycle_controller,
 };
+

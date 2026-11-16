@@ -1,5 +1,15 @@
-const { query } = require("../config/db");
+﻿const { query } = require("../config/db");
 const service = require("../services/12-workspace_service");
+const {
+  getRequestIp,
+  recordMeetingAudit,
+} = require("../services/30-meeting-audit_service");
+const {
+  publishCalendarChange,
+} = require("../services/31-calendar-realtime_service");
+const {
+  queueGoogleMeetingSync,
+} = require("../services/34-google-calendar-sync_service");
 
 function getUserId(req) {
   return (
@@ -156,16 +166,37 @@ const invite_meeting_member_controller = async (req, res) => {
       });
     }
 
-    return ok(
-      res,
-      await service.invite_meeting_member_service(
-        query,
-        userId,
-        meetingId,
-        req.body,
-      ),
-      201,
+    const result = await service.invite_meeting_member_service(
+      query,
+      userId,
+      meetingId,
+      req.body,
     );
+
+    recordMeetingAudit(query, {
+      meetingId,
+      actorUserId: userId,
+      actorType: "host",
+      eventType: "MEETING_INVITATION_SENT",
+      ipAddress: getRequestIp(req),
+      metadata: {
+        memberRole: result.data?.member_role,
+        delivery: result.data?.delivery || "account",
+        requiresAppSignup: Boolean(result.data?.requires_app_signup),
+      },
+    });
+
+    publishCalendarChange(query, {
+      meetingId,
+      eventType: "meeting_invited",
+      additionalUserIds: result.data?.user_id
+        ? [result.data.user_id]
+        : [],
+    });
+
+    queueGoogleMeetingSync(query, meetingId);
+
+    return ok(res, result, 201);
   } catch (error) {
     return fail(res, error);
   }
@@ -457,3 +488,4 @@ module.exports = {
   get_billing_overview_controller,
   get_mobile_meeting_inbox_controller,
 };
+

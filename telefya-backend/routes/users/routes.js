@@ -72,6 +72,40 @@ const {
 );
 
 const {
+  get_calendar_events_controller,
+  update_calendar_event_controller,
+  cancel_calendar_event_controller,
+  get_calendar_event_audit_controller,
+} = require("../../controllers/23-calendar_controller");
+
+const {
+  list_calendar_connections_controller,
+  start_google_calendar_connection_controller,
+  google_calendar_callback_controller,
+  disconnect_google_calendar_controller,
+} = require("../../controllers/29-calendar-connections_controller");
+
+const {
+  save_meeting_recurrence_controller,
+  get_meeting_recurrence_controller,
+  delete_meeting_recurrence_controller,
+} = require("../../controllers/24-recurrence_controller");
+
+const {
+  save_recurrence_exception_controller,
+  delete_recurrence_exception_controller,
+} = require("../../controllers/26-recurrence-exception_controller");
+
+const {
+  get_availability_settings_controller,
+  save_booking_profile_controller,
+  replace_availability_rules_controller,
+  get_availability_exceptions_controller,
+  create_availability_exception_controller,
+  delete_availability_exception_controller,
+} = require("../../controllers/27-availability_controller");
+
+const {
   schedule_meeting_controller,
   start_instant_meeting_controller,
   get_meeting_controller,
@@ -80,6 +114,106 @@ const {
 } = loadMeetingControllers();
 
 const user_router = express.Router();
+
+user_router.get(
+  "/calendar/events",
+  auth_middleware,
+  get_calendar_events_controller,
+);
+
+user_router.patch(
+  "/calendar/events/:meetingId",
+  auth_middleware,
+  update_calendar_event_controller,
+);
+
+user_router.post(
+  "/calendar/events/:meetingId/cancel",
+  auth_middleware,
+  cancel_calendar_event_controller,
+);
+
+user_router.get(
+  "/calendar/events/:meetingId/audit",
+  auth_middleware,
+  get_calendar_event_audit_controller,
+);
+
+user_router.get(
+  "/calendar/events/:meetingId/recurrence",
+  auth_middleware,
+  get_meeting_recurrence_controller,
+);
+
+user_router.put(
+  "/calendar/events/:meetingId/recurrence",
+  auth_middleware,
+  save_meeting_recurrence_controller,
+);
+
+user_router.delete(
+  "/calendar/events/:meetingId/recurrence",
+  auth_middleware,
+  delete_meeting_recurrence_controller,
+);
+
+user_router.post(
+  "/calendar/events/:meetingId/recurrence/exceptions",
+  auth_middleware,
+  save_recurrence_exception_controller,
+);
+
+user_router.delete(
+  "/calendar/events/:meetingId/recurrence/exceptions",
+  auth_middleware,
+  delete_recurrence_exception_controller,
+);
+
+user_router.get(
+  "/calendar/connections",
+  auth_middleware,
+  list_calendar_connections_controller,
+);
+
+user_router.post(
+  "/calendar/connections/google/start",
+  auth_middleware,
+  start_google_calendar_connection_controller,
+);
+
+/*
+ * Google sends the user here after consent. It cannot use our normal
+ * Authorization header, so this route intentionally has no auth middleware.
+ * The hashed, single-use OAuth state identifies the authenticated user.
+ */
+user_router.get(
+  "/calendar/connections/google/callback",
+  google_calendar_callback_controller,
+);
+
+user_router.delete(
+  "/calendar/connections/google",
+  auth_middleware,
+  disconnect_google_calendar_controller,
+);
+
+user_router.get(
+  "/calendar/availability/exceptions",
+  auth_middleware,
+  get_availability_exceptions_controller,
+);
+
+user_router.post(
+  "/calendar/availability/exceptions",
+  auth_middleware,
+  create_availability_exception_controller,
+);
+
+user_router.delete(
+  "/calendar/availability/exceptions/:exceptionId",
+  auth_middleware,
+  delete_availability_exception_controller,
+);
 
 user_router.get(
   "/profile",

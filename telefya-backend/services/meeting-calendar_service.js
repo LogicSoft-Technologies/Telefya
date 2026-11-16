@@ -81,8 +81,17 @@ function createMeetingCalendarInvite({
   }
 
   const startsAt = parseUtcDate(meeting.scheduled_for);
+  const durationMinutes = Math.max(
+    15,
+    Number(
+      meeting.duration_minutes ||
+        meeting.durationMinutes ||
+        DEFAULT_DURATION_MINUTES,
+    ),
+  );
+
   const endsAt = new Date(
-    startsAt.getTime() + DEFAULT_DURATION_MINUTES * 60 * 1000,
+    startsAt.getTime() + durationMinutes * 60 * 1000,
   );
 
   const title = meeting.des || "Telefya meeting";

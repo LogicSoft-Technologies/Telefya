@@ -43,6 +43,8 @@ export async function scheduleMeeting(payload: {
   timeZone: string;
   path: string;
   des?: string;
+  durationMinutes?: number;
+  idempotencyKey?: string;
 }) {
   return apiRequest<{
     success: boolean;

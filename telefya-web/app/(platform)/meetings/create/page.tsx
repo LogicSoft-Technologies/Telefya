@@ -14,7 +14,7 @@ import {
   Sparkles,
   Video,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { scheduleMeeting } from "@/lib/api/meetings";
 
 function createRoomId() {
@@ -74,6 +74,8 @@ export default function CreateMeetingPage() {
   const [timeZone, setTimeZone] = useState(
     Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
   );
+  const [durationMinutes, setDurationMinutes] = useState(60);
+  const idempotencyKeyRef = useRef<string | null>(null);
   const [roomId, setRoomId] = useState(createRoomId());
   const [loading, setLoading] = useState(false);
   const [createdLink, setCreatedLink] = useState("");
@@ -100,14 +102,21 @@ export default function CreateMeetingPage() {
         throw new Error("Choose a meeting time at least one minute from now.");
       }
 
-      await scheduleMeeting({
+      if (!idempotencyKeyRef.current) {
+        idempotencyKeyRef.current = crypto.randomUUID();
+      }
+
+      const response = await scheduleMeeting({
         date: selectedDate.toISOString(),
         timeZone,
         path: meetingPath,
         des: title.trim() || "Telefya meeting",
+        durationMinutes,
+        idempotencyKey: idempotencyKeyRef.current,
       });
 
-      setCreatedLink(meetingPath);
+      setCreatedLink(response.data?.meeting_url || meetingPath);
+      idempotencyKeyRef.current = null;
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "Unable to schedule meeting.",
@@ -271,6 +280,28 @@ export default function CreateMeetingPage() {
                 />
               </label>
             </div>
+
+            <label className="grid gap-2">
+              <span className="text-sm font-black text-navy-900">
+                Duration
+              </span>
+
+              <select
+                value={durationMinutes}
+                onChange={(event) =>
+                  setDurationMinutes(Number(event.target.value))
+                }
+                className="h-12 rounded-xl border border-border bg-white px-4 text-sm font-semibold text-navy-900 outline-none transition-all duration-200 focus:border-telefya-blue focus:ring-2 focus:ring-telefya-blue/15"
+              >
+                <option value={15}>15 minutes</option>
+                <option value={30}>30 minutes</option>
+                <option value={45}>45 minutes</option>
+                <option value={60}>1 hour</option>
+                <option value={90}>1 hour 30 minutes</option>
+                <option value={120}>2 hours</option>
+                <option value={180}>3 hours</option>
+              </select>
+            </label>
 
             <label className="grid gap-2">
               <span className="text-sm font-black text-navy-900">Room ID</span>

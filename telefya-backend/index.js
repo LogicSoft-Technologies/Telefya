@@ -19,12 +19,22 @@ const auth_middleware = require("./middleware/auth_middleware");
 const { save_profile_image } = require("./services/05-user_profile");
 const responseObject = require("./lib/responseObject");
 const socketAuthMiddleware = require("./middleware/socket_auth_middleware");
+const {
+  getUserRoom,
+  setCalendarNamespace,
+} = require("./services/31-calendar-realtime_service");
 const mediasoupSocket = require("./mediasoupSocket");
 const recording_bot_router = require("./routes/recording_bot_route");
 const billing_router = require("./routes/billing_route");
 const admin_router = require("./routes/admin/admin_router");
 
 const unsubscribe_router = require("./routes/public/unsubscribe_router");
+const meeting_preview_router = require(
+  "./routes/public/meeting-preview_router",
+);
+const booking_router = require(
+  "./routes/public/booking_router",
+);
 
 const {
   startAdminMailDeliveryWorker,
@@ -156,6 +166,8 @@ const createServer = () => {
   app.use("/api/v2/user", user_router);
   app.use("/api/v2/billing", billing_router);
   app.use("/api/v2/public", unsubscribe_router);
+  app.use("/api/v2/public", meeting_preview_router);
+  app.use("/api/v2/public", booking_router);
   app.use("/api/v2/admin", adminLimiter, admin_router);
 
   app.get("/api/v2/health", (req, res) => {
@@ -298,6 +310,23 @@ const startServer = async (app, port = process.env.PORT || 5000) => {
   });
 
   const mediaSoupIO = io.of("/conf_meeting");
+
+  const calendarIO = io.of("/calendar");
+
+  calendarIO.use(socketAuthMiddleware);
+
+  calendarIO.on("connection", (socket) => {
+    const userId = String(socket.userId || "").trim();
+
+    if (!userId) {
+      socket.disconnect(true);
+      return;
+    }
+
+    socket.join(getUserRoom(userId));
+  });
+
+  setCalendarNamespace(calendarIO);
 
   mediaSoupIO.use((socket, next) => {
     const isRecorderBot = socket.handshake.query?.recorderBot === "true";

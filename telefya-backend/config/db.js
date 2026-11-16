@@ -1554,4 +1554,63 @@ const creeateDBandTables = async () => {
   }
 };
 
-module.exports = { creeateDBandTables, closePool, query };
+function withTransaction(work) {
+  return new Promise((resolve, reject) => {
+    pool.getConnection((connectionError, connection) => {
+      if (connectionError) {
+        reject(connectionError);
+        return;
+      }
+
+      const transactionQuery = (sql, args = []) =>
+        new Promise((resolveQuery, rejectQuery) => {
+          connection.query(sql, args, (queryError, rows) => {
+            if (queryError) {
+              rejectQuery(queryError);
+              return;
+            }
+
+            resolveQuery(rows);
+          });
+        });
+
+      const rollback = (error) => {
+        connection.rollback(() => {
+          connection.release();
+          reject(error);
+        });
+      };
+
+      connection.beginTransaction(async (beginError) => {
+        if (beginError) {
+          connection.release();
+          reject(beginError);
+          return;
+        }
+
+        try {
+          const result = await work(transactionQuery);
+
+          connection.commit((commitError) => {
+            if (commitError) {
+              rollback(commitError);
+              return;
+            }
+
+            connection.release();
+            resolve(result);
+          });
+        } catch (error) {
+          rollback(error);
+        }
+      });
+    });
+  });
+}
+
+module.exports = {
+  creeateDBandTables,
+  closePool,
+  query,
+  withTransaction,
+};

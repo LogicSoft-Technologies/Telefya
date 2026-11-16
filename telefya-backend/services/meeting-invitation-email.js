@@ -51,6 +51,7 @@ async function sendMeetingInvitationEmail({
   meetingUrl,
   meetingTitle,
   scheduledFor,
+  durationMinutes,
 }) {
   const transporter = await getTransporter();
 
@@ -72,6 +73,7 @@ async function sendMeetingInvitationEmail({
               des: meetingTitle || "Telefya meeting",
               meeting_url: meetingUrl,
               scheduled_for: scheduledFor,
+              duration_minutes: durationMinutes,
             },
             hostName,
             attendeeEmail: email,
@@ -135,6 +137,82 @@ Download Telefya: ${appUrl}`,
   });
 }
 
+async function sendMeetingUpdateEmail({
+  meetingId,
+  email,
+  hostName,
+  meetingUrl,
+  meetingTitle,
+  scheduledFor,
+  durationMinutes,
+  calendarSequence = 1,
+}) {
+  const transporter = await getTransporter();
+
+  const brandName = process.env.SMTP_FROM_NAME || "Telefya";
+  const fromEmail =
+    process.env.SMTP_FROM_EMAIL || required("SMTP_USER");
+
+  const calendarAttachment = {
+    filename: "telefya-meeting-update.ics",
+    content: createMeetingCalendarInvite({
+      meeting: {
+        id: meetingId,
+        des: meetingTitle || "Telefya meeting",
+        meeting_url: meetingUrl,
+        scheduled_for: scheduledFor,
+        duration_minutes: durationMinutes,
+      },
+      hostName,
+      attendeeEmail: email,
+      method: "REQUEST",
+      sequence: calendarSequence,
+    }),
+    contentType: "text/calendar; charset=utf-8; method=REQUEST",
+  };
+
+  const meetingTime = new Date(scheduledFor).toLocaleString();
+
+  return transporter.sendMail({
+    from: `"${brandName}" <${fromEmail}>`,
+    to: email,
+    subject: `Updated: ${meetingTitle || "Telefya meeting"}`,
+    text: `${hostName || "The host"} updated ${
+      meetingTitle || "a Telefya meeting"
+    }.\n\nNew time: ${meetingTime}\nDuration: ${durationMinutes || 60} minutes\nJoin meeting: ${meetingUrl}\n\nAn updated calendar invitation is attached.`,
+    html: `
+      <div style="margin:0;padding:32px 16px;background:#f4f7fb;font-family:Arial,sans-serif;color:#071633;">
+        <div style="max-width:620px;margin:auto;background:#fff;border:1px solid #e2e8f3;border-radius:18px;overflow:hidden;">
+          <div style="height:6px;background:linear-gradient(90deg,#7B1CFF,#0F6BFF,#12D8B0);"></div>
+          <div style="padding:32px;">
+            <div style="font-size:23px;font-weight:800;color:#0F6BFF;">Telefya</div>
+            <div style="margin-top:24px;font-size:11px;font-weight:800;letter-spacing:.12em;color:#0F6BFF;">MEETING UPDATED</div>
+            <h1 style="margin:10px 0;font-size:28px;">Your meeting details changed</h1>
+            <p style="line-height:1.6;color:#475569;">
+              <strong>${escapeHtml(hostName || "The host")}</strong>
+              updated
+              <strong>${escapeHtml(meetingTitle || "this Telefya meeting")}</strong>.
+            </p>
+            <p style="padding:16px;background:#f7f9fe;border-radius:12px;color:#475569;">
+              <strong>New time:</strong> ${escapeHtml(meetingTime)}<br />
+              <strong>Duration:</strong> ${escapeHtml(
+                `${durationMinutes || 60} minutes`,
+              )}
+            </p>
+            <a href="${escapeHtml(meetingUrl)}" style="display:block;padding:15px;background:#0F6BFF;border-radius:12px;color:#fff;text-align:center;font-weight:800;text-decoration:none;">
+              Join meeting
+            </a>
+            <p style="margin:18px 0 0;color:#475569;line-height:1.5;">
+              An updated calendar invitation is attached. Open it to update the event in Google Calendar, Outlook, or Apple Calendar.
+            </p>
+          </div>
+        </div>
+      </div>
+    `,
+    attachments: [calendarAttachment],
+  });
+}
+
 async function sendMeetingCancellationEmail({
   meetingId,
   email,
@@ -142,6 +220,7 @@ async function sendMeetingCancellationEmail({
   meetingUrl,
   meetingTitle,
   scheduledFor,
+  calendarSequence = 0,
 }) {
   const transporter = await getTransporter();
 
@@ -161,6 +240,7 @@ async function sendMeetingCancellationEmail({
       hostName,
       attendeeEmail: email,
       method: "CANCEL",
+      sequence: calendarSequence,
     }),
     contentType: "text/calendar; charset=utf-8; method=CANCEL",
   };
@@ -197,6 +277,7 @@ async function sendMeetingCancellationEmail({
 
 module.exports = {
   sendMeetingInvitationEmail,
+  sendMeetingUpdateEmail,
   sendMeetingCancellationEmail,
   sendGuestMeetingInvitation: sendMeetingInvitationEmail,
 };
