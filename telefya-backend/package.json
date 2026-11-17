@@ -9,8 +9,8 @@
   "scripts": {
     "test": "jest --detectOpenHandles --forceExit",
     "test:coverage": "jest --coverage --detectOpenHandles --forceExit",
-    "start": "node index.js",
-    "dev": "nodemon index.js",
+    "start": "node init && node index.js",
+    "dev": "node init && nodemon index.js",
     "local": "nodemon server.js",
     "mkcert": "mkcert create-ca --cert .cert/ca.crt --key .cert/ca.key && mkcert create-cert --ca-cert .cert/ca.crt --ca-key .cert/ca.key --cert .cert/cert.crt --key .cert/cert.key"
   },
