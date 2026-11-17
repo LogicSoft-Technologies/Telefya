@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import {
   BarChart3,
+  Calendar,
   CalendarDays,
   Mail,
   Mic2,
@@ -40,6 +41,7 @@ type NavItem = {
 
 const navItems: NavItem[] = [
   { label: "Lobby", href: "/lobby", icon: CalendarDays },
+  { label: "Calendar", href: "/calender", icon: Calendar },
   { label: "Live Stage", href: "/live/demo", match: "/live", icon: Video },
   { label: "Speaker", href: "/speaker", icon: Mic2 },
   { label: "Host Console", href: "/host", icon: MonitorUp },
