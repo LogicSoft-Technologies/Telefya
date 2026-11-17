@@ -1,0 +1,784 @@
+import { Platform } from "react-native";
+import Constants from "expo-constants";
+import { Device } from "mediasoup-client";
+
+import {
+  ConfMeetingSocketCommands,
+  getActiveConfMeetingSocket,
+} from "@/services/confMeetingSocket";
+import {
+  startScreenShare as createScreenShareStream,
+  stopScreenShare as stopScreenShareStream,
+} from "@/services/screenShare.service";
+import {
+  applyVideoEffect,
+  type VideoEffectId,
+} from "@/services/video-effects.service";
+import type {
+  AnyRecord,
+  ConsumedPayload,
+  MeetingTransportDirection,
+  TransportCreatedPayload,
+} from "@/types/meeting.types";
+
+let device: Device | null = null;
+let sendTransport: any = null;
+let recvTransport: any = null;
+let localStream: any = null;
+
+let screenShareStream: any = null;
+let screenShareProducer: any = null;
+
+let creatingSendTransport: Promise<any> | null = null;
+let creatingRecvTransport: Promise<any> | null = null;
+
+function stopLocalStream(stream?: any) {
+  stream?.getTracks?.().forEach((track: any) => {
+    try {
+      track.stop?.();
+    } catch {
+      // A stopped native track does not need further handling.
+    }
+  });
+}
+
+function hasUsableLocalStream(stream?: any) {
+  const tracks = stream?.getTracks?.() ?? [];
+
+  return tracks.length > 0 &&
+    tracks.some((track: any) => track?.readyState !== "ended");
+}
+
+function getCameraCaptureError(error: unknown) {
+  const originalMessage =
+    error instanceof Error && error.message
+      ? error.message
+      : "";
+
+  const message = originalMessage.toLowerCase();
+
+  if (
+    message.includes("permission") ||
+    message.includes("notallowed") ||
+    message.includes("security")
+  ) {
+    return "Camera or microphone permission was denied. Enable both permissions in Android Settings and try again.";
+  }
+
+  if (
+    message.includes("notfound") ||
+    message.includes("no camera") ||
+    message.includes("device not found") ||
+    message.includes("no microphone")
+  ) {
+    return "No usable camera or microphone was found. Configure the emulator camera or test with a physical device.";
+  }
+
+  if (
+    message.includes("notreadable") ||
+    message.includes("in use") ||
+    message.includes("failed to allocate") ||
+    message.includes("could not start")
+  ) {
+    return "The camera or microphone is busy or unavailable. Close other apps using it, then try again.";
+  }
+
+  if (
+    message.includes("native module") ||
+    message.includes("webrtc")
+  ) {
+    return "Native WebRTC is unavailable. Open the installed Telefya development build, not Expo Go.";
+  }
+
+  return originalMessage || "Unable to start the camera and microphone.";
+}
+
+function createDevice() {
+  if (Platform.OS === "web") {
+    return new Device();
+  }
+
+  try {
+    return new Device({
+      handlerName: "ReactNative106",
+    });
+  } catch {
+    return new Device();
+  }
+}
+
+function getDevice() {
+  if (!device) {
+    device = createDevice();
+  }
+
+  return device;
+}
+
+async function getReactNativeWebrtc() {
+  if (Platform.OS === "web") {
+    return null;
+  }
+
+  if (Constants.appOwnership === "expo") {
+    throw new Error(
+      "Live meeting video requires the installed Telefya development build. Expo Go cannot load Telefya’s native WebRTC camera.",
+    );
+  }
+
+  try {
+    const webrtc = await import("@stream-io/react-native-webrtc");
+    webrtc.registerGlobals?.();
+    return webrtc;
+  } catch {
+    throw new Error(
+      "Native WebRTC is unavailable. Rebuild and open the Telefya development build.",
+    );
+  }
+}
+
+function getActiveSocket() {
+  const socket = getActiveConfMeetingSocket();
+
+  if (!socket?.connected) {
+    throw new Error("Meeting socket is not connected.");
+  }
+
+  return socket;
+}
+
+function waitForTransportCreated(
+  direction: MeetingTransportDirection,
+  timeoutMs = 15000,
+) {
+  const socket = getActiveSocket();
+
+  return new Promise<TransportCreatedPayload>((resolve, reject) => {
+    let settled = false;
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      socket.off("transport-created", handleTransport);
+      socket.off("error", handleError);
+    };
+
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      callback();
+    };
+
+    const timer = setTimeout(() => {
+      finish(() => {
+        reject(new Error(`Creating ${direction} transport timed out.`));
+      });
+    }, timeoutMs);
+
+    const handleTransport = (
+      payload: TransportCreatedPayload & {
+        error?: string;
+      },
+    ) => {
+      if (!payload || payload.direction !== direction) {
+        return;
+      }
+
+      finish(() => {
+        if (payload.error) {
+          reject(new Error(payload.error));
+        } else {
+          resolve(payload);
+        }
+      });
+    };
+
+    const handleError = (payload: { action?: string; error?: string }) => {
+      if (payload?.action !== "create-transport") {
+        return;
+      }
+
+      finish(() => {
+        reject(
+          new Error(payload.error || "Unable to create meeting transport."),
+        );
+      });
+    };
+
+    socket.on("transport-created", handleTransport);
+    socket.on("error", handleError);
+  });
+}
+
+function waitForConsumed(producerId: string, timeoutMs = 15000) {
+  const socket = getActiveSocket();
+
+  return new Promise<ConsumedPayload>((resolve, reject) => {
+    let settled = false;
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      socket.off("consumed", handleConsumed);
+      socket.off("error", handleError);
+    };
+
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      callback();
+    };
+
+    const timer = setTimeout(() => {
+      finish(() => {
+        reject(new Error("Receiving participant media timed out."));
+      });
+    }, timeoutMs);
+
+    const handleConsumed = (
+      payload: ConsumedPayload & {
+        error?: string;
+      },
+    ) => {
+      if (!payload || payload.producerId !== producerId) {
+        return;
+      }
+
+      finish(() => {
+        if (payload.error) {
+          reject(new Error(payload.error));
+        } else {
+          resolve(payload);
+        }
+      });
+    };
+
+    const handleError = (payload: { action?: string; error?: string }) => {
+      if (payload?.action !== "consume") {
+        return;
+      }
+
+      finish(() => {
+        reject(
+          new Error(payload.error || "Unable to receive participant media."),
+        );
+      });
+    };
+
+    socket.on("consumed", handleConsumed);
+    socket.on("error", handleError);
+  });
+}
+
+function attachTransportStateHandlers(transport: any) {
+  transport.on("connectionstatechange", (state: string) => {
+    if (state === "failed" || state === "closed") {
+      transport.close?.();
+    }
+  });
+}
+
+const MediasoupClient = {
+  loadDevice: async (routerRtpCapabilities: AnyRecord) => {
+    if (!routerRtpCapabilities) {
+      throw new Error("The meeting server did not provide RTP capabilities.");
+    }
+
+    if (Platform.OS !== "web") {
+      await getReactNativeWebrtc();
+    }
+
+    const activeDevice = getDevice();
+
+    if (!activeDevice.loaded) {
+      await activeDevice.load({
+        routerRtpCapabilities: routerRtpCapabilities as any,
+      });
+    }
+
+    return activeDevice;
+  },
+
+  getRtpCapabilities: () => {
+    const activeDevice = getDevice();
+
+    if (!activeDevice.loaded) {
+      throw new Error("Mediasoup device has not loaded.");
+    }
+
+    return activeDevice.rtpCapabilities as AnyRecord;
+  },
+
+  createSendTransport: async () => {
+    if (sendTransport) {
+      return sendTransport;
+    }
+
+    if (creatingSendTransport) {
+      return creatingSendTransport;
+    }
+
+    creatingSendTransport = (async () => {
+      const activeDevice = getDevice();
+      const pendingTransport = waitForTransportCreated("send");
+
+      await ConfMeetingSocketCommands.createTransport({
+        direction: "send",
+      });
+
+      const response = await pendingTransport;
+
+      if (!response?.transportParams) {
+        throw new Error("The server returned invalid send transport data.");
+      }
+
+      const transport = activeDevice.createSendTransport(
+        response.transportParams as any,
+      );
+
+      attachTransportStateHandlers(transport);
+
+      transport.on(
+        "connect",
+        async ({ dtlsParameters }: any, callback: any, errback: any) => {
+          try {
+            await ConfMeetingSocketCommands.connectTransport({
+              transportId: transport.id,
+              dtlsParameters,
+            });
+
+            callback();
+          } catch (error) {
+            errback(error);
+          }
+        },
+      );
+
+      transport.on(
+        "produce",
+        async (
+          { kind, rtpParameters, appData }: any,
+          callback: any,
+          errback: any,
+        ) => {
+          try {
+            const response = await ConfMeetingSocketCommands.produce({
+              transportId: transport.id,
+              kind,
+              rtpParameters,
+              appData,
+            });
+
+            if (!response?.producerId) {
+              throw new Error(
+                "The meeting server did not return a producer ID.",
+              );
+            }
+
+            callback({ id: response.producerId });
+          } catch (error) {
+            errback(error);
+          }
+        },
+      );
+
+      sendTransport = transport;
+      return transport;
+    })();
+
+    try {
+      return await creatingSendTransport;
+    } catch (error) {
+      sendTransport = null;
+      throw error;
+    } finally {
+      creatingSendTransport = null;
+    }
+  },
+
+  createRecvTransport: async () => {
+    if (recvTransport) {
+      return recvTransport;
+    }
+
+    if (creatingRecvTransport) {
+      return creatingRecvTransport;
+    }
+
+    creatingRecvTransport = (async () => {
+      const activeDevice = getDevice();
+      const pendingTransport = waitForTransportCreated("recv");
+
+      await ConfMeetingSocketCommands.createTransport({
+        direction: "recv",
+      });
+
+      const response = await pendingTransport;
+
+      if (!response?.transportParams) {
+        throw new Error("The server returned invalid receive transport data.");
+      }
+
+      const transport = activeDevice.createRecvTransport(
+        response.transportParams as any,
+      );
+
+      attachTransportStateHandlers(transport);
+
+      transport.on(
+        "connect",
+        async ({ dtlsParameters }: any, callback: any, errback: any) => {
+          try {
+            await ConfMeetingSocketCommands.connectTransport({
+              transportId: transport.id,
+              dtlsParameters,
+            });
+
+            callback();
+          } catch (error) {
+            errback(error);
+          }
+        },
+      );
+
+      recvTransport = transport;
+      return transport;
+    })();
+
+    try {
+      return await creatingRecvTransport;
+    } catch (error) {
+      recvTransport = null;
+      throw error;
+    } finally {
+      creatingRecvTransport = null;
+    }
+  },
+
+  getLocalStream: async () => {
+    // Reuse the stream acquired during pre-join preview or an existing meeting.
+    if (hasUsableLocalStream(localStream)) {
+      return localStream;
+    }
+
+    // Do not keep a stale stream whose tracks have ended.
+    stopLocalStream(localStream);
+    localStream = null;
+
+    const webrtc = await getReactNativeWebrtc();
+
+    if (!webrtc?.mediaDevices?.getUserMedia) {
+      throw new Error(
+        "Camera and microphone require the Telefya native development build.",
+      );
+    }
+
+    try {
+      localStream = await webrtc.mediaDevices.getUserMedia({
+        audio: true,
+        video: {
+          facingMode: "user",
+          width: 640,
+          height: 480,
+          frameRate: 24,
+        },
+      });
+
+      if (!hasUsableLocalStream(localStream)) {
+        stopLocalStream(localStream);
+        localStream = null;
+
+        throw new Error(
+          "The camera did not return a usable video or audio stream.",
+        );
+      }
+
+      return localStream;
+    } catch (error) {
+      stopLocalStream(localStream);
+      localStream = null;
+
+      throw new Error(getCameraCaptureError(error));
+    }
+  },
+
+  produceAudio: async (appData: AnyRecord) => {
+    const transport =
+      sendTransport || (await MediasoupClient.createSendTransport());
+
+    const stream = await MediasoupClient.getLocalStream();
+
+    const track = stream.getAudioTracks?.()?.[0];
+
+    if (!track) {
+      throw new Error("No microphone track is available.");
+    }
+
+    return transport.produce({
+      track,
+      appData: {
+        ...appData,
+        source: "mic",
+        isScreen: false,
+      },
+    });
+  },
+
+  produceVideo: async (appData: AnyRecord) => {
+    const transport =
+      sendTransport || (await MediasoupClient.createSendTransport());
+
+    const stream = await MediasoupClient.getLocalStream();
+
+    const track = stream.getVideoTracks?.()?.[0];
+
+    if (!track) {
+      throw new Error("No camera track is available.");
+    }
+
+    return transport.produce({
+      track,
+      appData: {
+        ...appData,
+        source: "camera",
+        isScreen: false,
+      },
+    });
+  },
+
+  startScreenShare: async (appData: AnyRecord = {}) => {
+    if (screenShareProducer || screenShareStream) {
+      throw new Error("You are already sharing your screen.");
+    }
+
+    const transport =
+      sendTransport || (await MediasoupClient.createSendTransport());
+
+    let stream: any = null;
+    let producer: any = null;
+
+    try {
+      stream = await createScreenShareStream();
+
+      const track = stream?.getVideoTracks?.()?.[0];
+
+      if (!track) {
+        throw new Error("No screen-share video track is available.");
+      }
+
+      producer = await transport.produce({
+        track,
+        appData: {
+          ...appData,
+          source: "screen",
+          isScreen: true,
+        },
+      });
+
+      screenShareStream = stream;
+      screenShareProducer = producer;
+
+      track.addEventListener?.("ended", () => {
+        void MediasoupClient.stopScreenShare();
+      });
+
+      producer.on?.("transportclose", () => {
+        void MediasoupClient.stopScreenShare();
+      });
+
+      producer.on?.("trackended", () => {
+        void MediasoupClient.stopScreenShare();
+      });
+
+      return {
+        stream,
+        producer,
+      };
+    } catch (error) {
+      try {
+        producer?.close?.();
+      } catch {}
+
+      stopScreenShareStream(stream);
+
+      screenShareProducer = null;
+      screenShareStream = null;
+
+      throw error;
+    }
+  },
+
+  stopScreenShare: async () => {
+    const producer = screenShareProducer;
+    const stream = screenShareStream;
+    const userId = String(producer?.appData?.userId ?? "").trim();
+
+    screenShareProducer = null;
+    screenShareStream = null;
+
+    try {
+      if (userId) {
+        await ConfMeetingSocketCommands.stopScreenShare({
+          userId,
+          screenProducerIds: producer?.id ? [producer.id] : undefined,
+        });
+      }
+    } finally {
+      try {
+        producer?.close?.();
+      } catch {}
+
+      stopScreenShareStream(stream);
+    }
+  },
+
+  isScreenSharing: () => {
+    return Boolean(screenShareProducer);
+  },
+
+  getScreenShareStream: () => {
+    return screenShareStream;
+  },
+
+  consume: async (producerId: string, appData: AnyRecord = {}) => {
+    if (!producerId) {
+      throw new Error("Producer ID is required.");
+    }
+
+    const activeDevice = getDevice();
+
+    if (!activeDevice.loaded) {
+      throw new Error("Mediasoup device has not loaded.");
+    }
+
+    const transport =
+      recvTransport || (await MediasoupClient.createRecvTransport());
+
+    const pendingConsumed = waitForConsumed(producerId);
+
+    await ConfMeetingSocketCommands.consume({
+      transportId: transport.id,
+      producerId,
+      rtpCapabilities: activeDevice.rtpCapabilities as AnyRecord,
+      appData,
+    });
+
+    const response = await pendingConsumed;
+
+    if (!response?.consumer) {
+      throw new Error("The meeting server did not return a consumer.");
+    }
+
+    const consumer = await transport.consume({
+      id: response.consumer.id,
+      producerId,
+      kind: response.consumer.kind,
+      rtpParameters: response.consumer.rtpParameters,
+      appData: response.consumer.appData ?? response.appData ?? {},
+    });
+
+    const webrtc = await getReactNativeWebrtc();
+
+    let stream: any = null;
+
+    if (consumer.track) {
+      if (webrtc?.MediaStream) {
+        stream = new webrtc.MediaStream([consumer.track]);
+      } else if (
+        Platform.OS === "web" &&
+        typeof MediaStream !== "undefined"
+      ) {
+        stream = new MediaStream([consumer.track]);
+      }
+    }
+
+    await ConfMeetingSocketCommands.resumeConsume({
+      consumerId: consumer.id,
+    });
+
+    return {
+      consumer,
+      stream,
+      info: response,
+    };
+  },
+
+  setTrackEnabled: (kind: "audio" | "video", enabled: boolean) => {
+    if (!localStream) {
+      return;
+    }
+
+    const tracks =
+      kind === "audio"
+        ? (localStream.getAudioTracks?.() ?? [])
+        : (localStream.getVideoTracks?.() ?? []);
+
+    tracks.forEach((track: any) => {
+      track.enabled = enabled;
+    });
+  },
+
+  applyVideoEffect: async (effectId: VideoEffectId) => {
+    if (!localStream) {
+      throw new Error(
+        "Turn your camera on before applying a background effect.",
+      );
+    }
+
+    return applyVideoEffect(localStream, effectId);
+  },
+
+  getTransportStats: async (): Promise<any[]> => {
+    const transports = [sendTransport, recvTransport].filter(Boolean);
+
+    const reports = await Promise.all(
+      transports.map(async (transport) => {
+        try {
+          const report = await transport.getStats?.();
+
+          if (!report) return [];
+
+          if (typeof report.forEach === "function") {
+            const values: any[] = [];
+            report.forEach((value: any) => values.push(value));
+            return values;
+          }
+
+          if (Array.isArray(report)) {
+            return report;
+          }
+
+          return Object.values(report);
+        } catch {
+          return [];
+        }
+      }),
+    );
+
+    return reports.flat();
+  },
+
+  cleanup: () => {
+    sendTransport?.close?.();
+    recvTransport?.close?.();
+
+    stopLocalStream(localStream);
+
+    try {
+      screenShareProducer?.close?.();
+    } catch {}
+
+    stopScreenShareStream(screenShareStream);
+
+    sendTransport = null;
+    recvTransport = null;
+    localStream = null;
+    screenShareProducer = null;
+    screenShareStream = null;
+    device = null;
+    creatingSendTransport = null;
+    creatingRecvTransport = null;
+  },
+};
+
+export default MediasoupClient;

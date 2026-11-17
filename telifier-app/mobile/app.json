@@ -1,0 +1,109 @@
+{
+  "expo": {
+    "name": "Telefya",
+    "slug": "telefya-app",
+    "version": "1.0.3",
+    "orientation": "default",
+    "icon": "./assets/images/app-icon.png",
+    "scheme": "telefyapp",
+    "userInterfaceStyle": "automatic",
+    "androidStatusBar": {
+      "translucent": true,
+      "backgroundColor": "#00000000",
+      "barStyle": "light-content"
+    },
+    "ios": {
+      "icon": "./assets/expo.icon",
+      "usesAppleSignIn": true,
+      "requireFullScreen": true,
+      "infoPlist": {
+        "NSCameraUsageDescription": "Telefya needs camera access for video meetings.",
+        "NSMicrophoneUsageDescription": "Telefya needs microphone access for audio meetings."
+      }
+    },
+    "android": {
+      "package": "com.telefya.app",
+      "versionCode": 10,
+      "googleServicesFile": "./google-services.json",
+      "permissions": [
+        "CAMERA",
+        "RECORD_AUDIO",
+        "MODIFY_AUDIO_SETTINGS",
+        "INTERNET",
+        "ACCESS_NETWORK_STATE",
+        "POST_NOTIFICATIONS",
+        "VIBRATE",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_MEDIA_PROJECTION",
+        "FOREGROUND_SERVICE_MEDIA_PLAYBACK"
+      ],
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/images/app-icon.png",
+        "backgroundImage": "./assets/images/app-icon.png",
+        "monochromeImage": "./assets/images/app-icon.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "output": "static",
+      "favicon": "./assets/images/favicon.png",
+      "bundler": "metro"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-notifications",
+        {
+          "color": "#0F6BFF",
+          "defaultChannel": "meetings"
+        }
+      ],
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#208AEF",
+          "android": {
+            "image": "./assets/images/app-icon.png",
+            "imageWidth": 76
+          }
+        }
+      ],
+      "expo-audio",
+      "expo-navigation-bar",
+      "expo-secure-store",
+      "expo-asset",
+      "@react-native-community/datetimepicker",
+      "expo-apple-authentication",
+      "expo-web-browser",
+      "expo-video",
+      [
+        "expo-screen-orientation",
+        {
+          "initialOrientation": "DEFAULT"
+        }
+      ],
+      "expo-image",
+      [
+        "@sentry/react-native/expo",
+        {
+          "url": "https://sentry.io/",
+          "project": "telefya-app",
+          "organization": "logicsoft-technologies"
+        }
+      ],
+      "@sentry/react-native"
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "953a9f80-92a7-4328-9966-a329a52c9f8a"
+      }
+    },
+    "owner": "logicsoft.dev"
+  }
+}
